@@ -16,16 +16,28 @@ config:
   # expressed as tokens × token_price, making future repricing easier. The actual
   # gas cost per byte remains the same as Prague.
   #
-  # What EIP-2780 enables for EIP-7976 (calldata floor cost): a floor price of
-  # 4 gas per token (1 token per byte) can be added on top of the token model.
+  # EIP-7976 INTERACTION (Amsterdam): EIP-7976 adds a calldata floor cost:
+  #   floor = 21000 + 64 × len(calldata)
+  # This floor is based on calldata LENGTH only (not byte values). In Amsterdam,
+  # the actual intrinsic gas = max(EIP-2780 model, EIP-7976 floor).
+  #
+  # For 100-byte calldata:
+  #   EIP-7976 floor = 21000 + 64×100 = 27400
+  #   EIP-2780 zero bytes = 21000 + 4×100 = 21400  → floor dominates
+  #   EIP-2780 nonzero bytes = 21000 + 16×100 = 22600 → floor dominates
+  #
+  # In Amsterdam, for ANY number of calldata bytes N, the floor (64×N) always
+  # exceeds the EIP-2780 model (max 16×N for all-nonzero calldata), since 64 > 16.
+  # Therefore: EIP-7976 floor ALWAYS dominates for any non-empty calldata.
   #
   # Test approach:
   #   1. Simple ETH transfer (0 calldata): verify gasUsed == 21000
-  #   2. Tx with 100 zero bytes: verify gasUsed == 21000 + 100×4 = 21400
-  #   3. Tx with 100 non-zero bytes: verify gasUsed == 21000 + 100×16 = 22600
-  #      (using 0xff bytes = all non-zero)
+  #   2. Tx with 100 zero bytes: verify estimate ≈ 27400 (EIP-7976 floor)
+  #   3. Tx with 100 non-zero bytes: verify estimate ≈ 27400 (EIP-7976 floor)
+  #   4. Verify delta ≈ 0 (floor is length-only; EIP-2780 4/16 difference is hidden)
   #
-  # These tests confirm TX_BASE is unchanged and calldata pricing is consistent.
+  # Tests 2+3 confirm EIP-7976 floor implementation. Test 4 confirms that the
+  # floor does NOT distinguish zero vs non-zero bytes (length-only pricing).
 
 tasks:
   - name: check_clients_are_healthy
@@ -137,9 +149,9 @@ tasks:
           exit 1
         fi
 
-  # ─── Test 2: Tx with 100 zero bytes → expected 21000 + 400 = 21400 ─────────
+  # ─── Test 2: Tx with 100 zero bytes → floor 21000 + 64×100 = 27400 ──────────
   - name: run_shell
-    title: "Test 2: Tx with 100 zero bytes — verify zero-byte cost == 4 gas"
+    title: "Test 2: Tx with 100 zero bytes — verify EIP-7976 floor == 27400"
     id: testZeroBytes
     timeout: 5m
     config:
@@ -161,14 +173,15 @@ tasks:
         export HOME=${FOUNDRY_HOME}
 
         echo "=== Test 2: Tx with 100 zero calldata bytes ==="
-        echo "Expected: gasUsed == 21000 + 100×4 = 21400"
+        echo "Expected: estimate ≈ 27400 (EIP-7976 floor: 21000 + 64×100)"
+        echo "  Note: EIP-2780 model would give 21400, but EIP-7976 floor dominates."
         echo ""
 
         # 100 zero bytes = "0x" + "00" × 100
         ZERO_CALLDATA="0x$(python3 -c "print('00' * 100)")"
         echo "Calldata: ${ZERO_CALLDATA}"
 
-        # eth_estimateGas first to get a clean estimate
+        # eth_estimateGas to get the floor-driven estimate
         ESTIMATE_JSON=$(curl -s -X POST \
           -H "Content-Type: application/json" \
           --data "{
@@ -191,23 +204,28 @@ tasks:
         echo "eth_estimateGas: ${ESTIMATE_HEX} = ${ESTIMATE} gas"
         echo "::set-output zeroBytesEstimate ${ESTIMATE}"
 
-        # Expected 21400 ± 100 (allow for rounding, warm/cold address, etc.)
-        # The recipient 0xdead has no code, so no execution gas beyond base + calldata
-        EXPECTED=21400
+        # EIP-7976 floor: 21000 + 64×100 = 27400 (dominates over EIP-2780's 21400)
+        # Allow ±100 for client implementation differences
+        EXPECTED=27400
         LOWER=$((EXPECTED - 100))
         UPPER=$((EXPECTED + 100))
 
         if [ "${ESTIMATE}" -ge "${LOWER}" ] && [ "${ESTIMATE}" -le "${UPPER}" ]; then
-          echo "PASS: Estimate ${ESTIMATE} ≈ ${EXPECTED} gas (100 zero bytes × 4 gas each). ✓"
+          echo "PASS: Estimate ${ESTIMATE} ≈ ${EXPECTED} gas (EIP-7976 floor: 21000 + 64×100). ✓"
+          echo "      Confirms: EIP-7976 floor is active and dominates EIP-2780 model (21400)."
+        elif [ "${ESTIMATE}" -ge 21300 ] && [ "${ESTIMATE}" -le 21500 ]; then
+          echo "FAIL: Estimate ${ESTIMATE} ≈ 21400 — looks like EIP-7976 floor is NOT active!"
+          echo "      EIP-2780 model gives 21400, but Amsterdam requires EIP-7976 floor (27400)."
+          exit 1
         else
-          echo "WARN: Estimate ${ESTIMATE}, expected ≈ ${EXPECTED}."
-          echo "      If ~${EXPECTED}: zero byte cost is 4 (EIP-2780 compatible)."
-          echo "      Note: 0xdead may have some balance warm cost. Check calldata math."
+          echo "FAIL: Estimate ${ESTIMATE}, expected ≈ ${EXPECTED} (EIP-7976 floor)."
+          echo "      Neither EIP-2780 model (21400) nor floor (27400) was returned."
+          exit 1
         fi
 
-  # ─── Test 3: Tx with 100 non-zero bytes → expected 21000 + 1600 = 22600 ────
+  # ─── Test 3: Tx with 100 non-zero bytes → floor 21000 + 64×100 = 27400 ──────
   - name: run_shell
-    title: "Test 3: Tx with 100 non-zero bytes — verify nonzero-byte cost == 16 gas"
+    title: "Test 3: Tx with 100 non-zero bytes — verify EIP-7976 floor == 27400"
     id: testNonzeroBytes
     timeout: 5m
     config:
@@ -229,7 +247,8 @@ tasks:
         export HOME=${FOUNDRY_HOME}
 
         echo "=== Test 3: Tx with 100 non-zero calldata bytes ==="
-        echo "Expected: gasUsed == 21000 + 100×16 = 22600"
+        echo "Expected: estimate ≈ 27400 (EIP-7976 floor: 21000 + 64×100)"
+        echo "  Note: EIP-2780 model would give 22600, but EIP-7976 floor dominates."
         echo ""
 
         # 100 non-zero bytes = 0xff × 100
@@ -258,21 +277,28 @@ tasks:
         echo "eth_estimateGas: ${ESTIMATE_HEX} = ${ESTIMATE} gas"
         echo "::set-output nonzeroBytesEstimate ${ESTIMATE}"
 
-        # Expected 22600 ± 100
-        EXPECTED=22600
+        # EIP-7976 floor: 21000 + 64×100 = 27400 (dominates over EIP-2780's 22600)
+        # Allow ±100 for client implementation differences
+        EXPECTED=27400
         LOWER=$((EXPECTED - 100))
         UPPER=$((EXPECTED + 100))
 
         if [ "${ESTIMATE}" -ge "${LOWER}" ] && [ "${ESTIMATE}" -le "${UPPER}" ]; then
-          echo "PASS: Estimate ${ESTIMATE} ≈ ${EXPECTED} gas (100 non-zero bytes × 16 gas each). ✓"
+          echo "PASS: Estimate ${ESTIMATE} ≈ ${EXPECTED} gas (EIP-7976 floor: 21000 + 64×100). ✓"
+          echo "      Confirms: EIP-7976 floor is active and dominates EIP-2780 model (22600)."
+        elif [ "${ESTIMATE}" -ge 22500 ] && [ "${ESTIMATE}" -le 22700 ]; then
+          echo "FAIL: Estimate ${ESTIMATE} ≈ 22600 — looks like EIP-7976 floor is NOT active!"
+          echo "      EIP-2780 model gives 22600, but Amsterdam requires EIP-7976 floor (27400)."
+          exit 1
         else
-          echo "WARN: Estimate ${ESTIMATE}, expected ≈ ${EXPECTED}."
-          echo "      Non-zero calldata should cost 16 gas/byte under EIP-2780 token model."
+          echo "FAIL: Estimate ${ESTIMATE}, expected ≈ ${EXPECTED} (EIP-7976 floor)."
+          echo "      Neither EIP-2780 model (22600) nor floor (27400) was returned."
+          exit 1
         fi
 
-  # ─── Test 4: Verify calldata cost per byte by delta ────────────────────────
+  # ─── Test 4: Verify delta ≈ 0 (floor is length-only, not byte-value-based) ──
   - name: run_shell
-    title: "Test 4: Verify delta cost: 100 non-zero vs 100 zero = 1200 gas (12 gas/byte diff)"
+    title: "Test 4: Verify delta ≈ 0: EIP-7976 floor treats zero and non-zero bytes equally"
     id: testDelta
     timeout: 5m
     config:
@@ -296,16 +322,26 @@ tasks:
         DELTA=$((NONZERO - ZERO))
         echo "Delta: ${NONZERO} - ${ZERO} = ${DELTA} gas"
         echo ""
-        echo "Expected delta: 100 × (16 - 4) = 1200 gas"
-        echo "  (non-zero byte costs 16; zero byte costs 4; diff = 12 per byte)"
+        echo "Expected delta: 0 gas (EIP-7976 floor is length-only, not byte-value-based)"
+        echo "  In Amsterdam, EIP-7976 floor = 21000 + 64×len(calldata)."
+        echo "  Same length (100 bytes) → same floor → same estimate for zero and nonzero."
+        echo "  Note: EIP-2780 4/16 gas/byte distinction is hidden behind the floor."
 
-        # Allow ±100 for rounding / address warmth differences
-        if [ "${DELTA}" -ge 1100 ] && [ "${DELTA}" -le 1300 ]; then
-          echo "PASS: Delta ${DELTA} ≈ 1200 gas. Calldata cost difference is 12 gas/byte. ✓"
-          echo "      Confirms: zero=4 gas/byte, nonzero=16 gas/byte (EIP-2780 token model)."
+        # In Amsterdam, EIP-7976 floor dominates for any calldata, and the floor is
+        # purely length-based. Both 100-zero and 100-nonzero should give the same estimate.
+        # Allow ±50 for minor implementation variations.
+        if [ "${DELTA}" -ge -50 ] && [ "${DELTA}" -le 50 ]; then
+          echo "PASS: Delta ${DELTA} ≈ 0 gas. ✓"
+          echo "      EIP-7976 floor correctly treats zero and non-zero bytes equally."
+          echo "      The EIP-2780 per-byte distinction (4 vs 16) is subsumed by the floor."
+        elif [ "${DELTA}" -ge 1100 ] && [ "${DELTA}" -le 1300 ]; then
+          echo "FAIL: Delta ${DELTA} ≈ 1200 gas — EIP-7976 floor appears NOT active!"
+          echo "      Pure EIP-2780 pricing (4/16 per byte) would give 1200 gas delta."
+          echo "      Amsterdam requires EIP-7976 floor which makes delta = 0."
+          exit 1
         else
-          echo "WARN: Delta ${DELTA}, expected ≈ 1200 gas."
-          echo "      Calldata pricing may differ from EIP-2780 expectations."
+          echo "WARN: Unexpected delta ${DELTA}. Expected ≈ 0 (EIP-7976 floor active)."
+          echo "      Check if estimates from Tests 2+3 were obtained correctly."
         fi
 
   - name: run_shell
@@ -322,18 +358,22 @@ tasks:
         ZERO=$(echo $ZERO_EST | jq -r 2>/dev/null || echo "$ZERO_EST")
         NONZERO=$(echo $NONZERO_EST | jq -r 2>/dev/null || echo "$NONZERO_EST")
         echo "================================================================"
-        echo "EIP-2780 Intrinsic Gas and Calldata Repricing Summary"
+        echo "EIP-2780 + EIP-7976 Intrinsic Gas Summary (Amsterdam)"
         echo "================================================================"
         echo ""
-        echo "EIP-2780 specification:"
-        echo "  TX_BASE                = 21000    (unchanged from Prague)"
+        echo "EIP-2780 token model (unchanged per-byte costs from Prague):"
+        echo "  TX_BASE                = 21000    (unchanged)"
         echo "  TX_DATA_ZERO           = 4 gas    (per zero calldata byte)"
         echo "  TX_DATA_NONZERO        = 16 gas   (per non-zero calldata byte)"
-        echo "  TX_DATA_TOKEN_STANDARD = 4 gas    (per token in token model)"
         echo ""
-        echo "Test 1 (simple ETH transfer):      gasUsed = ${BASE}  (expected: 21000)"
-        echo "Test 2 (100 zero bytes):          estimate = ${ZERO}   (expected: ~21400)"
-        echo "Test 3 (100 non-zero bytes):      estimate = ${NONZERO} (expected: ~22600)"
+        echo "EIP-7976 floor (Amsterdam addition):"
+        echo "  floor = 21000 + 64 × len(calldata)  [length-only, not byte-value-based]"
+        echo "  For 100 bytes: floor = 27400 (dominates EIP-2780 model in all cases)"
+        echo ""
+        echo "Test 1 (simple ETH transfer):      gasUsed = ${BASE}     (expected: 21000)"
+        echo "Test 2 (100 zero bytes):          estimate = ${ZERO}   (expected: ~27400, EIP-7976 floor)"
+        echo "Test 3 (100 non-zero bytes):      estimate = ${NONZERO}   (expected: ~27400, EIP-7976 floor)"
+        echo "Test 4 (delta zero vs nonzero):              (expected: ≈0, floor is length-only)"
         echo ""
         echo "All tests passed ✓"
         echo "================================================================"
