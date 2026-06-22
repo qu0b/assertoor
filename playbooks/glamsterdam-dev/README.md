@@ -19,6 +19,9 @@ They deploy contracts, send transactions, and verify on-chain state against EIP 
 | `glamsterdam-devnet-6-eip8037-refund-routing.yaml` | `glamsterdam-devnet-6-eip8037-refund-routing` | Source-based gas refund routing | EIP-8037 | Measures sender balance delta to confirm refund credited to tx.origin; requires foundry |
 | `glamsterdam-devnet-6-eip8038-gas-verify.yaml` | `glamsterdam-devnet-6-eip8038-gas-verify` | SSTORE gas repricing verification | EIP-8038 | Tests COLD_STORAGE_WRITE=5000; also checks EIP-2780 TX_BASE; requires foundry |
 | `glamsterdam-devnet-6-eip8246-no-burn.yaml` | `glamsterdam-devnet-6-eip8246-no-burn` | SELFDESTRUCT no-burn | EIP-8246 | Verifies ETH sent to address(0) via SELFDESTRUCT is dropped, not credited; requires foundry |
+| `glamsterdam-devnet-6-eip8024-opcodes.yaml` | `glamsterdam-devnet-6-eip8024-opcodes` | EIP-8024 SWAPN/DUPN/EXCHANGE opcode suite (EELS + live smoke) | EIP-8024 | Runs full EELS test_swapn/test_dupn/test_exchange suites from tag v6.0.0; plus eth_call smoke tests |
+| `glamsterdam-devnet-6-eip7981-access-list-gas.yaml` | `glamsterdam-devnet-6-eip7981-access-list-gas` | Access list storage key cost 2400→1900 | EIP-7981 | Uses eth_estimateGas with 100 keys; on-chain type-1 tx with 50 keys to confirm 1900/key |
+| `glamsterdam-devnet-6-eip2780-intrinsic-gas.yaml` | `glamsterdam-devnet-6-eip2780-intrinsic-gas` | TX_BASE=21000 and calldata repricing | EIP-2780 | Simple transfer gasUsed==21000; zero/nonzero byte cost 4/16; calldata delta verification |
 | `glamsterdam-devnet-6-builder-lifecycle.yaml` | `glamsterdam-devnet-6-builder-lifecycle` | EIP-8282 builder deposit and exit lifecycle | EIP-8282 | Tests builder deposit/exit predeploys; waits for GLOAS fork epoch; requires foundry |
 | `bal-devnet-3-eels-tests.yaml` | `bal-devnet-3-eels-tests` | EELS spec tests for bal-devnet-3 | bal-devnet-3 EIPs | Legacy; pinned to `devnets/bal/3` branch |
 | `bal-devnet-4-eels-tests.yaml` | `bal-devnet-4-eels-tests` | EELS spec tests for bal-devnet-4 | bal-devnet-4 EIPs | Legacy; pinned to `tests-snøbal-devnet-4@v1.0.0` |
@@ -44,10 +47,11 @@ There is no pre-installed foundry requirement; each test that needs it installs 
 An internet connection to `foundry.paradigm.xyz` is required during test execution.
 
 Playbooks that install foundry: `eip7954-initcode`, `eip8037-refund-routing`, `eip8038-gas-verify`,
-`eip8246-no-burn`, `builder-lifecycle`, `eels-tests` (indirectly via foundry steps).
+`eip8246-no-burn`, `builder-lifecycle`, `eip7981-access-list-gas`, `eip2780-intrinsic-gas`,
+`eels-tests` (indirectly via foundry steps).
 
-Playbooks that do NOT require foundry: `eip7997-factory`, `eip7843-slotnum` (uses raw eth_call via cast
-which is installed as part of foundry), `eip7708-transfer-logs`.
+Playbooks that do NOT require foundry: `eip7997-factory`, `eip7843-slotnum` (uses raw eth_call via curl),
+`eip7708-transfer-logs`, `eip8024-opcodes` (uses EELS for the suite; eth_call smoke test via curl).
 
 ---
 
@@ -64,6 +68,9 @@ installs any tooling it needs, and cleans up after itself. They can be run in an
 | `eip7843-slotnum` | Yes (depends on EIP-7997 being live in genesis, not on the 7997 playbook) |
 | `eip7954-initcode` | Yes |
 | `eip7997-factory` | Yes |
+| `eip8024-opcodes` | Yes |
+| `eip7981-access-list-gas` | Yes |
+| `eip2780-intrinsic-gas` | Yes |
 | `eip8037-refund-routing` | Yes |
 | `eip8038-gas-verify` | Yes |
 | `eip8246-no-burn` | Yes |
@@ -75,7 +82,7 @@ If running the full suite manually, a natural order is:
 
 1. `eip7997-factory` — verifies the CREATE2 factory predeploy (other tests may use it)
 2. `eip7843-slotnum` — uses the factory internally
-3. `eip7708-transfer-logs`, `eip7954-initcode`, `eip8037-refund-routing`, `eip8038-gas-verify`, `eip8246-no-burn` — in any order
+3. `eip7708-transfer-logs`, `eip7954-initcode`, `eip8037-refund-routing`, `eip8038-gas-verify`, `eip8246-no-burn`, `eip8024-opcodes`, `eip7981-access-list-gas`, `eip2780-intrinsic-gas` — in any order
 4. `builder-lifecycle` — last, since it waits for GLOAS epoch
 5. `glamsterdam-devnet-6-eels-tests` — runs the full EELS suite; takes up to 6 hours; run last or standalone
 
@@ -91,7 +98,7 @@ and `bal-devnet-5-eels-tests` are for previous devnets and should not be run on 
 
 | EIP | Title | Amsterdam change |
 |-----|-------|-----------------|
-| EIP-2780 | Reduce intrinsic transaction gas | TX_BASE unchanged; other intrinsic cost reductions |
+| EIP-2780 | Reduce intrinsic transaction gas | TX_BASE=21000 unchanged; calldata token model (zero=4, nonzero=16 gas/byte) |
 | EIP-7708 | ETH transfer logs | `Transfer(from, to, value)` emitted by `0xfff...ffe` on every ETH move |
 | EIP-7843 | SLOTNUM opcode | New opcode `0x49` pushes current beacon slot number |
 | EIP-7954 | Increase maximum contract sizes | MAX_CODE_SIZE 24576 → 65536; MAX_INIT_CODE_SIZE 49152 → 131072 |
@@ -99,4 +106,6 @@ and `bal-devnet-5-eels-tests` are for previous devnets and should not be run on 
 | EIP-8037 | Source-based gas refund routing | State-clearing refunds credited to tx.origin, not coinbase |
 | EIP-8038 | SSTORE gas repricing | COLD_STORAGE_WRITE = 5000 (was 22100); COLD_STORAGE_ACCESS unchanged at 2100 |
 | EIP-8246 | SELFDESTRUCT no-burn | ETH sent to address(0) via SELFDESTRUCT is dropped (not credited to address(0)) |
+| EIP-7981 | Reduce access list storage key cost | ACCESS_LIST_STORAGE_KEY_COST: 2400 → 1900 (address cost unchanged) |
+| EIP-8024 | SWAPN/DUPN/EXCHANGE opcodes | Three new EVM opcodes for stack manipulation; work in legacy bytecode |
 | EIP-8282 | Builder execution requests | Builder deposit/exit predeploys; requires genesis-generator >= 6.1.0 |
