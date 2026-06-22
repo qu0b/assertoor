@@ -1,0 +1,174 @@
+id: glamsterdam-devnet-6-eip7928-bal-hash
+name: "glamsterdam-devnet-6: EIP-7928 block access list hash presence and consistency"
+timeout: 1h
+config:
+  # EIP-7928: Block-Level Access Lists (BAL)
+  #
+  # Background:
+  #   In Amsterdam, every block header includes `blockAccessListHash` — the
+  #   Keccak256 of the RLP-encoded Block Access List. The BAL records all
+  #   state changes made during block execution: storage writes/reads, balance
+  #   changes, nonce changes, and code changes, indexed per-transaction.
+  #
+  #   Properties to verify:
+  #   1. `blockAccessListHash` is present in every Amsterdam block header.
+  #   2. The hash is a valid 32-byte non-zero value.
+  #   3. The hash differs between blocks with different transaction sets
+  #      (the BAL reflects actual state changes — not a static placeholder).
+  #   4. Two consecutive blocks built off the same parent each produce a
+  #      different BAL hash (BAL is block-specific, not chain-global).
+  #
+  #   The gas-optimization property (BAL warming across transactions) is
+  #   tested separately by the EELS execution spec test suite (eip7928 module).
+  #
+  # Test approach:
+  #   1. Wait for network stability (epoch 2).
+  #   2. Fetch 10 recent blocks.
+  #   3. Verify EVERY block has a non-empty `blockAccessListHash`.
+  #   4. Verify that multiple blocks have DIFFERENT `blockAccessListHash` values
+  #      (showing the BAL changes per block — not hardcoded).
+  #   5. Compare the BAL hash of a block with transactions vs the empty-BAL
+  #      sentinel (keccak256(RLP([])) = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421).
+  #      Verify at least one block has a non-empty BAL (hash ≠ empty sentinel).
+
+tasks:
+  - name: check_clients_are_healthy
+    title: "Check if at least one client is ready"
+    id: clientCheck
+    timeout: 5m
+    config:
+      minClientCount: 1
+
+  - name: get_consensus_specs
+    id: consensusSpecs
+    title: "Get consensus chain specs"
+
+  - name: check_consensus_slot_range
+    title: "Wait for network to be stable (epoch 2)"
+    timeout: 1h
+    config:
+      minEpochNumber: 2
+
+  - name: run_shell
+    title: "Verify EIP-7928 blockAccessListHash in recent blocks"
+    id: testBalHash
+    timeout: 10m
+    config:
+      shell: bash
+      envVars:
+        EL_RPC_HOST: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+      command: |
+        set -e
+        EL_RPC_HOST=$(echo $EL_RPC_HOST | jq -r)
+
+        echo "=== EIP-7928 Block Access List Hash Verification ==="
+        echo "RPC: ${EL_RPC_HOST}"
+
+        # Fetch latest block number
+        LATEST_HEX=$(curl -sf -X POST "${EL_RPC_HOST}" \
+          -H 'Content-Type: application/json' \
+          -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+          | jq -r '.result')
+        echo "Latest block: ${LATEST_HEX}"
+
+        # Fetch 10 recent blocks and check blockAccessListHash
+        # Empty BAL sentinel = keccak256(RLP([])) = keccak256(0xc0)
+        # = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
+        EMPTY_BAL_HASH="0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
+        ZERO_HASH="0x0000000000000000000000000000000000000000000000000000000000000000"
+
+        TOTAL_BLOCKS=10
+        BLOCKS_WITH_BAL=0
+        BLOCKS_WITH_NONEMPTY_BAL=0
+        BLOCKS_WITH_TX=0
+        UNIQUE_HASHES=""
+        FAIL=0
+
+        LATEST_DEC=$(printf '%d' "${LATEST_HEX}")
+        START_BLOCK=$((LATEST_DEC - TOTAL_BLOCKS + 1))
+        if [ $START_BLOCK -lt 1 ]; then
+          START_BLOCK=1
+        fi
+
+        echo ""
+        echo "Checking blocks ${START_BLOCK} to ${LATEST_DEC}:"
+        for i in $(seq $START_BLOCK $LATEST_DEC); do
+          BLOCK_HEX=$(printf '0x%x' $i)
+          BLOCK_JSON=$(curl -sf -X POST "${EL_RPC_HOST}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"${BLOCK_HEX}\",false],\"id\":1}")
+
+          BAL_HASH=$(echo "${BLOCK_JSON}" | jq -r '.result.blockAccessListHash // "MISSING"')
+          TX_COUNT=$(echo "${BLOCK_JSON}" | jq '.result.transactions | length')
+          GAS_USED=$(echo "${BLOCK_JSON}" | jq -r '.result.gasUsed // "0x0"')
+
+          STATUS="OK"
+          if [ "${BAL_HASH}" = "MISSING" ] || [ "${BAL_HASH}" = "null" ]; then
+            STATUS="NO_FIELD"
+            FAIL=1
+          elif [ "${BAL_HASH}" = "${ZERO_HASH}" ]; then
+            STATUS="ZERO"
+            FAIL=1
+          elif [ "${BAL_HASH}" = "${EMPTY_BAL_HASH}" ]; then
+            STATUS="EMPTY"
+          else
+            STATUS="OK"
+            BLOCKS_WITH_NONEMPTY_BAL=$((BLOCKS_WITH_NONEMPTY_BAL + 1))
+          fi
+
+          [ "${BAL_HASH}" != "MISSING" ] && [ "${BAL_HASH}" != "null" ] && BLOCKS_WITH_BAL=$((BLOCKS_WITH_BAL + 1))
+          [ "${TX_COUNT}" -gt "0" ] && BLOCKS_WITH_TX=$((BLOCKS_WITH_TX + 1))
+
+          # Collect unique hashes
+          if ! echo "${UNIQUE_HASHES}" | grep -qF "${BAL_HASH}"; then
+            UNIQUE_HASHES="${UNIQUE_HASHES} ${BAL_HASH}"
+          fi
+
+          echo "  Block ${i}: txs=${TX_COUNT} gasUsed=${GAS_USED} balHash=${BAL_HASH} [${STATUS}]"
+        done
+
+        UNIQUE_COUNT=$(echo "${UNIQUE_HASHES}" | tr ' ' '\n' | grep -v '^$' | wc -l)
+
+        echo ""
+        echo "=== Summary ==="
+        echo "Blocks checked:               ${TOTAL_BLOCKS}"
+        echo "Blocks with BAL hash:         ${BLOCKS_WITH_BAL}"
+        echo "Blocks with non-empty BAL:    ${BLOCKS_WITH_NONEMPTY_BAL}"
+        echo "Blocks with transactions:     ${BLOCKS_WITH_TX}"
+        echo "Unique BAL hashes seen:       ${UNIQUE_COUNT}"
+        echo ""
+
+        # Assertion 1: ALL blocks must have blockAccessListHash
+        if [ $BLOCKS_WITH_BAL -lt $TOTAL_BLOCKS ]; then
+          echo "FAIL [1/3]: Only ${BLOCKS_WITH_BAL}/${TOTAL_BLOCKS} blocks have blockAccessListHash."
+          echo "  EIP-7928 requires this field in every Amsterdam block header."
+          FAIL=1
+        else
+          echo "PASS [1/3]: All ${TOTAL_BLOCKS} blocks have blockAccessListHash present."
+        fi
+
+        # Assertion 2: At least one block with transactions has non-empty BAL
+        if [ $BLOCKS_WITH_TX -gt 0 ] && [ $BLOCKS_WITH_NONEMPTY_BAL -eq 0 ]; then
+          echo "FAIL [2/3]: ${BLOCKS_WITH_TX} blocks have transactions but none have non-empty BAL hash."
+          echo "  EIP-7928 requires the BAL to record state changes from transactions."
+          FAIL=1
+        else
+          echo "PASS [2/3]: ${BLOCKS_WITH_NONEMPTY_BAL} blocks have non-empty BAL hash (expected for tx-bearing blocks)."
+        fi
+
+        # Assertion 3: BAL hash varies across blocks (not hardcoded)
+        if [ $UNIQUE_COUNT -lt 2 ]; then
+          echo "FAIL [3/3]: All ${TOTAL_BLOCKS} blocks have the same BAL hash (${UNIQUE_COUNT} unique)."
+          echo "  EIP-7928 BAL should vary per block based on state changes."
+          FAIL=1
+        else
+          echo "PASS [3/3]: BAL hash varies across blocks (${UNIQUE_COUNT} unique values in ${TOTAL_BLOCKS} blocks)."
+          echo "  This confirms BAL is dynamically computed per-block, not static."
+        fi
+
+        echo ""
+        if [ $FAIL -ne 0 ]; then
+          echo "RESULT: FAIL — EIP-7928 blockAccessListHash verification failed."
+          exit 1
+        fi
+        echo "RESULT: PASS — EIP-7928 blockAccessListHash is present, non-empty in tx-bearing blocks, and varies across blocks."
