@@ -24,6 +24,7 @@ They deploy contracts, send transactions, and verify on-chain state against EIP 
 | `glamsterdam-devnet-6-eip2780-intrinsic-gas.yaml` | `glamsterdam-devnet-6-eip2780-intrinsic-gas` | TX_BASE=21000 and calldata repricing | EIP-2780 | Simple transfer gasUsed==21000; zero/nonzero byte cost 4/16; calldata delta verification |
 | `glamsterdam-devnet-6-eip7976-calldata-floor.yaml` | `glamsterdam-devnet-6-eip7976-calldata-floor` | Calldata floor cost (64 gas/byte) | EIP-7976 | Verifies floor = 21000+64×len(calldata) via eth_estimateGas; both zero and nonzero bytes hit same floor |
 | `glamsterdam-devnet-6-eip7778-block-gas.yaml` | `glamsterdam-devnet-6-eip7778-block-gas` | Block gas accounting without refunds | EIP-7778 | Clears 8 storage slots; verifies block.gasUsed ≥ sum(receipt.gasUsed) — refunds not subtracted from block space |
+| `glamsterdam-devnet-6-eip7928-bal-hash.yaml` | `glamsterdam-devnet-6-eip7928-bal-hash` | Block access list hash presence and consistency | EIP-7928 | Verifies blockAccessListHash is present in all blocks, non-empty in tx-bearing blocks, and varies across blocks |
 | `glamsterdam-devnet-6-builder-lifecycle.yaml` | `glamsterdam-devnet-6-builder-lifecycle` | EIP-8282 builder deposit and exit lifecycle | EIP-8282 | Tests builder deposit/exit predeploys; waits for GLOAS fork epoch; requires foundry |
 | `bal-devnet-3-eels-tests.yaml` | `bal-devnet-3-eels-tests` | EELS spec tests for bal-devnet-3 | bal-devnet-3 EIPs | Legacy; pinned to `devnets/bal/3` branch |
 | `bal-devnet-4-eels-tests.yaml` | `bal-devnet-4-eels-tests` | EELS spec tests for bal-devnet-4 | bal-devnet-4 EIPs | Legacy; pinned to `tests-snøbal-devnet-4@v1.0.0` |
@@ -52,8 +53,9 @@ Playbooks that install foundry: `eip7954-initcode`, `eip7778-block-gas`, `eip803
 `eip8038-gas-verify`, `eip8246-no-burn`, `builder-lifecycle`, `eip7981-access-list-gas`,
 `eip2780-intrinsic-gas`, `eels-tests` (indirectly via foundry steps).
 
-Playbooks that do NOT require foundry: `eip7997-factory`, `eip7843-slotnum` (uses raw eth_call via curl),
-`eip7708-transfer-logs`, `eip8024-opcodes` (uses EELS for the suite; eth_call smoke test via curl).
+Playbooks that do NOT require foundry: `eip7997-factory`, `eip7843-slotnum`, `eip7708-transfer-logs`,
+`eip7928-bal-hash` (all use eth_getBlockByNumber/eth_call via curl only),
+`eip8024-opcodes` (uses EELS for the suite; eth_call smoke test via curl).
 
 ---
 
@@ -75,6 +77,7 @@ installs any tooling it needs, and cleans up after itself. They can be run in an
 | `eip2780-intrinsic-gas` | Yes |
 | `eip7976-calldata-floor` | Yes |
 | `eip7778-block-gas` | Yes |
+| `eip7928-bal-hash` | Yes |
 | `eip8037-refund-routing` | Yes |
 | `eip8038-gas-verify` | Yes |
 | `eip8246-no-burn` | Yes |
@@ -86,7 +89,7 @@ If running the full suite manually, a natural order is:
 
 1. `eip7997-factory` — verifies the CREATE2 factory predeploy (other tests may use it)
 2. `eip7843-slotnum` — uses the factory internally
-3. `eip7708-transfer-logs`, `eip7954-initcode`, `eip8037-refund-routing`, `eip7778-block-gas`, `eip8038-gas-verify`, `eip8246-no-burn`, `eip8024-opcodes`, `eip7981-access-list-gas`, `eip2780-intrinsic-gas`, `eip7976-calldata-floor` — in any order
+3. `eip7708-transfer-logs`, `eip7954-initcode`, `eip8037-refund-routing`, `eip7778-block-gas`, `eip7928-bal-hash`, `eip8038-gas-verify`, `eip8246-no-burn`, `eip8024-opcodes`, `eip7981-access-list-gas`, `eip2780-intrinsic-gas`, `eip7976-calldata-floor` — in any order
 4. `builder-lifecycle` — last, since it waits for GLOAS epoch
 5. `glamsterdam-devnet-6-eels-tests` — runs the full EELS suite; takes up to 6 hours; run last or standalone
 
@@ -113,5 +116,6 @@ and `bal-devnet-5-eels-tests` are for previous devnets and should not be run on 
 | EIP-7981 | Reduce access list storage key cost | ACCESS_LIST_STORAGE_KEY_COST: 2400 → 1900 (address cost unchanged) |
 | EIP-8024 | SWAPN/DUPN/EXCHANGE opcodes | Three new EVM opcodes for stack manipulation; work in legacy bytecode |
 | EIP-7778 | Block gas accounting without refunds | block.gasUsed = pre-refund gas; refunds still issued to tx.origin (EIP-8037) but don't reduce block space |
+| EIP-7928 | Block-Level Access Lists | Every block header includes `blockAccessListHash`: Keccak256 of RLP-encoded BAL recording all state changes per-tx |
 | EIP-7976 | Increase calldata floor cost | floor_data_cost = 21000 + 64 × len(calldata); actual = max(standard, floor) |
 | EIP-8282 | Builder execution requests | Builder deposit/exit predeploys; requires genesis-generator >= 6.1.0 |
