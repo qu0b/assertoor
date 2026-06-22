@@ -1,24 +1,21 @@
 id: glamsterdam-devnet-6-eels-tests
-name: "glamsterdam-devnet-6: Run EELS execution spec tests (all EIPs, devnets/glamsterdam/6)"
+name: "glamsterdam-devnet-6: Run EELS execution spec tests (all EIPs, tests-glamsterdam-devnet@v6.0.0)"
 timeout: 6h
 config:
   walletPrivkey: ""
   walletSeed: "spectests-gd6"
-  # TODO: update to tests-glamsterdam-devnet@v6.0.0 once tag is cut on devnets/glamsterdam/6.
-  # (Tag already exists at commit 6a1f367 but pinned to branch for now in case HEAD advances.)
-  #
   # EIPs covered vs bal-devnet-5 (9 -> 13 EIPs):
   #   Carried forward: 7708, 7778, 7843, 7928, 7954, 7976, 7981, 8024, 8037
   #   NEW: 2780 (reduce intrinsic tx gas), 7997 (deterministic factory predeploy),
   #        8246 (selfdestruct no burn), 8282 (builder execution requests)
   #   OMITTED: 8038 (state-access gas repricing) — spec module present but no
-  #             tests/amsterdam/eip8038_* directory exists on devnets/glamsterdam/6;
+  #             tests/amsterdam/eip8038_* directory exists on tests-glamsterdam-devnet@v6.0.0;
   #             coverage is integrated into EIP-8037 test suite.
   #
   # NOTE (EIP-8282): builder execution requests require the genesis-generator to
   #   pre-deploy the builder registry contract at 0x0000884d2AA32eAa155F59A2f24eFa73D9008282.
   #   Ensure kurtosis config uses genesis-generator >= 6.1.0.
-  specTestsBranch: "devnets/glamsterdam/6"
+  specTestsBranch: "tests-glamsterdam-devnet@v6.0.0"
 tasks:
   # install python + deps
   - name: run_shell
@@ -621,7 +618,7 @@ tasks:
               export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
-              # EIP-8037 on devnets/glamsterdam/6 uses source-based refund routing
+              # EIP-8037 on tests-glamsterdam-devnet@v6.0.0 uses source-based refund routing
               # (PR #2999): state gas refunds return to the originating source
               # (gas_left vs reservoir) rather than always to gas_left. EIP-8038
               # (state-access gas repricing) is integrated into this test suite.
