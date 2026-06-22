@@ -4,20 +4,31 @@ timeout: 2h
 config:
   walletPrivkey: ""
   # EIP-8038: COLD_STORAGE_WRITE = 5000 (replaces Prague's 2100 COLD_SLOAD + 20000 SSTORE_SET = 22100)
-  # WARM_STORAGE_READ_COST = 100 (unchanged from EIP-2929)
+  # WARM_ACCESS = 100 (unchanged from EIP-2929)
+  # COLD_STORAGE_ACCESS = 2100 (unchanged from EIP-2929 — EIP-8038 only changes WRITE cost)
   # TX_BASE = 21000 (EIP-2780 does not change the base cost)
   #
   # Gas bounds for a single cold SSTORE via a minimal Solidity dispatch:
-  #   Prague:     21000 (base) + 22100 (COLD_SLOAD + SSTORE_SET) + ~1000 (dispatch) = ~44100
-  #   Amsterdam:  21000 (base) +  5000 (COLD_STORAGE_WRITE)      + ~1000 (dispatch) = ~27000
+  #   Prague:     21000 (base) + 2100 (COLD_SLOAD) + 20000 (SSTORE_SET) + ~1000 (dispatch) = ~44100
+  #   Amsterdam:  21000 (base) + 5000 (COLD_STORAGE_WRITE)               + ~1000 (dispatch) = ~27000
+  #
+  # Note: SSTORE internals under EIP-8038 (Amsterdam):
+  #   Cold slot: COLD_STORAGE_ACCESS(2100) + (COLD_STORAGE_WRITE - COLD_STORAGE_ACCESS)(2900) = 5000
+  #   The 2100 is still charged but subsumed within COLD_STORAGE_WRITE (it's accounted via diff).
+  #
+  # Gas bounds for a cold SLOAD via eth_estimateGas:
+  #   Prague:    21000 (base) + 2100 (COLD_STORAGE_ACCESS) + ~500 (dispatch) = ~23600
+  #   Amsterdam: 21000 (base) + 2100 (COLD_STORAGE_ACCESS) + ~500 (dispatch) = ~23600
+  #   (COLD_STORAGE_ACCESS = 2100 is unchanged by EIP-8038)
   #
   # We test:
   #   1. Cold SSTORE: gasUsed must be in [21500, 30000]
   #      Lower bound 21500 guards against malformed receipt (below TX_BASE is nonsensical)
   #      Upper bound 30000 allows up to ~9000 for dispatch while still proving we are NOT using
   #      Prague pricing (Prague would be ~44000+).
-  #   2. Warm SLOAD after cold SSTORE: a second tx that reads back val should cost much less
-  #      than a fresh cold SSTORE — specifically < 2500 execution gas (100 warm SLOAD vs 22100).
+  #   2. Cold SLOAD via eth_estimateGas: must be < 24500
+  #      Upper bound 24500 covers 21000 + 2100 + ~1400 dispatch.
+  #      This test verifies the estimate is reasonable, NOT that SLOAD cost changed.
   #   3. ETH transfer baseline: simple EOA-to-EOA transfer must be ~21000 (EIP-2780 TX_BASE).
 
 tasks:
@@ -255,38 +266,19 @@ tasks:
               echo "This is a non-zero-to-nonzero (1->2) write, so SSTORE_RESET applies (not SSTORE_SET)."
               echo ""
 
-              # Call store(2): the slot val was set to 1 in the previous tx.
-              # In a new tx, the slot is cold again from an access-list perspective
-              # (access list is per-transaction). But we want to measure warm SLOAD
-              # independently, so we use eth_call (which is view/pure — no state change).
+              # The slot val was set to 1 in the previous tx. In a new eth_estimateGas
+              # context, the access list is reset: the slot is cold again.
+              # EIP-8038 does NOT change COLD_STORAGE_ACCESS (still 2100 gas).
+              # Only COLD_STORAGE_WRITE changed (from 22100 to 5000).
               #
-              # Actually, load() is a view function — we can call it as a state-mutating
-              # transaction to get a gas receipt, or we can use eth_call with a gas estimate.
-              # We use cast send with the view selector — some clients accept this;
-              # others reject it as a state-changing tx. Use eth_estimateGas instead.
+              # We use eth_estimateGas on the load() view function. estimateGas
+              # simulates the call as a full transaction, charging:
+              #   21000 (TX_BASE) + 2100 (COLD_STORAGE_ACCESS) + ~500 (dispatch) ≈ 23600
               #
-              # To get a proper gasUsed receipt for a SLOAD, we deploy a tiny wrapper that
-              # does: (1) cold SSTORE to write a value, (2) warm SLOAD to read it back,
-              # all in ONE transaction. The warm SLOAD cost is then:
-              #   gasUsed(combined) - gasUsed(cold_SSTORE_only) ≈ WARM_STORAGE_READ_COST = 100
-              #
-              # For simplicity and robustness, we use eth_estimateGas on the load() call.
-              # eth_estimateGas returns the gas that would be charged for execution.
-              # For a view call that does one SLOAD on an already-written (but cold in new
-              # tx context) slot: COLD_SLOAD=100 (EIP-8038 equivalent) + dispatch overhead.
-              #
-              # Under EIP-8038, a cold SLOAD costs COLD_STORAGE_READ_COST = 100 gas.
-              # (Previously under EIP-2929 it was 2100 for cold SLOAD.)
-              # Warm SLOAD = 100 (WARM_STORAGE_READ_COST, unchanged).
-              #
-              # We measure using eth_estimateGas for load():
-              #   Expected: 21000 + 100 (SLOAD, cold after EIP-8038) + ~500 dispatch ≈ 21600
-              #   Upper bound: 23500 (generous for dispatch overhead)
-              #   Prague cold SLOAD would be: 21000 + 2100 + ~500 = ~23600
-              #   Amsterdam cold SLOAD (EIP-8038): 21000 + 100 + ~500 = ~21600
-              #
-              # Note: even though load() was called view, estimateGas will simulate it
-              # and charge gas as if it were a real tx.
+              # This test verifies the estimate is within a sane range. It does NOT
+              # assert that the SLOAD cost changed (it didn't under EIP-8038).
+              # Note: even though load() is declared view, eth_estimateGas will simulate it
+              # and charge gas as if it were a real transaction.
 
               LOAD_SELECTOR="0x27193a21"  # keccak256("load()") truncated to 4 bytes
 
@@ -310,21 +302,23 @@ tasks:
               echo "Estimated gas for load() (cold SLOAD context): ${LOAD_GAS}"
               echo "::set-output loadGasEstimate ${LOAD_GAS}"
 
-              # Under EIP-8038, cold SLOAD = 100 gas (same as warm under EIP-2929).
-              # Total estimate: 21000 (TX_BASE) + 100 (SLOAD) + ~500 (dispatch) < 22500
-              # Prague cold SLOAD: 21000 + 2100 + ~500 = ~23600
-              # We use 23000 as upper bound to catch Prague-era cold SLOAD pricing (2100).
+              # COLD_STORAGE_ACCESS = 2100 (unchanged by EIP-8038 — EIP-8038 only lowers WRITE cost).
+              # Total estimate: 21000 (TX_BASE) + 2100 (COLD_SLOAD) + ~500 (dispatch) ≈ 23600
+              # Upper bound 24500 allows for forge/Solidity dispatch overhead while staying
+              # well below 30000 (which would indicate a wildly incorrect implementation).
+              # This assertion verifies the SLOAD estimate is within a reasonable range,
+              # not that the SLOAD cost changed (it didn't under EIP-8038).
 
-              if [ "${LOAD_GAS}" -gt 23000 ]; then
-                echo "FAIL: load() gas estimate=${LOAD_GAS} exceeds Amsterdam upper bound (23000)."
-                echo "      EIP-8038 cold SLOAD = 100 gas => expected estimate ~21500-22500."
-                echo "      If this client still charges Prague COLD_SLOAD (2100), estimate is ~23600+."
-                echo "      Likely cause: EIP-8038 COLD_STORAGE_READ_COST not implemented."
+              if [ "${LOAD_GAS}" -gt 24500 ]; then
+                echo "FAIL: load() gas estimate=${LOAD_GAS} exceeds upper bound (24500)."
+                echo "      COLD_STORAGE_ACCESS=2100 (unchanged). Expected estimate ~23600."
+                echo "      21000 (TX_BASE) + 2100 (COLD_SLOAD) + ~500 (dispatch) = ~23600."
+                echo "      Gas above 24500 indicates unexpected overhead or a broken client."
                 exit 1
               fi
 
-              echo "PASS: load() gas estimate=${LOAD_GAS} is in expected Amsterdam range (< 23000)."
-              echo "      EIP-8038 COLD_STORAGE_READ_COST=100 is in effect (Prague would be ~23600)."
+              echo "PASS: load() gas estimate=${LOAD_GAS} is in expected range (< 24500)."
+              echo "      COLD_STORAGE_ACCESS=2100 (unchanged by EIP-8038). Estimate ~23600 expected."
 
   # Test 2: ETH transfer baseline (EIP-2780 TX_BASE check)
   - name: run_tasks
@@ -437,8 +431,8 @@ tasks:
         echo ""
         echo "EIP-8038 specification (Amsterdam):"
         echo "  COLD_STORAGE_WRITE  = 5000  (replaces Prague: 2100+20000=22100)"
-        echo "  COLD_STORAGE_READ   = 100   (replaces Prague EIP-2929: 2100)"
-        echo "  WARM_STORAGE_READ   = 100   (unchanged)"
+        echo "  COLD_STORAGE_ACCESS = 2100  (unchanged from EIP-2929 — EIP-8038 only changes WRITE)"
+        echo "  WARM_ACCESS         = 100   (unchanged)"
         echo "  TX_BASE             = 21000 (EIP-2780: unchanged)"
         echo ""
         echo "Test 1: Cold SSTORE (store(1) on fresh contract slot)"
@@ -448,10 +442,10 @@ tasks:
         echo "  Prague would be: ~44000      (21000+22100+dispatch)"
         echo "  Status: PASS"
         echo ""
-        echo "Test 1b: Cold SLOAD gas estimate (load() on previously-written slot)"
+        echo "Test 1b: Cold SLOAD gas estimate (load() via eth_estimateGas)"
         echo "  eth_estimateGas: ${LOAD_GAS}"
-        echo "  Expected:    < 23000  (Amsterdam: 21000+100+dispatch)"
-        echo "  Prague would be: ~23600+ (21000+2100+dispatch)"
+        echo "  Expected:    < 24500  (21000+2100(COLD_STORAGE_ACCESS)+dispatch ~= 23600)"
+        echo "  Note: COLD_STORAGE_ACCESS=2100 is unchanged by EIP-8038"
         echo "  Status: PASS"
         echo ""
         echo "Test 2: ETH transfer TX_BASE (EIP-2780 unchanged)"
