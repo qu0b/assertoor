@@ -1,13 +1,13 @@
 id: glamsterdam-devnet-6-eip7843-slotnum
-name: "glamsterdam-devnet-6: EIP-7843 SLOTNUM opcode (0x49) verification"
+name: "glamsterdam-devnet-6: EIP-7843 SLOTNUM opcode (0x4b) verification"
 timeout: 2h
 config:
   walletPrivkey: ""
-  # EIP-7843: Adds the SLOTNUM opcode (0x49) that pushes the current beacon chain
+  # EIP-7843: Adds the SLOTNUM opcode (0x4b) that pushes the current beacon chain
   # slot number onto the EVM stack. This allows smart contracts to read the beacon
   # slot directly without an oracle.
   #
-  # SLOTNUM (0x49):
+  # SLOTNUM (0x4b):
   #   - Gas cost: 2 (same as TIMESTAMP/NUMBER)
   #   - Stack: [] -> [slot_number]
   #   - The slot number increases every 12 seconds (one beacon slot)
@@ -21,14 +21,14 @@ config:
   #   4. Verify the slot number advances between two calls (chain is live)
   #
   # SLOTNUM reader contract runtime bytecode (9 bytes):
-  #   0x49       SLOTNUM       -- push current beacon slot onto stack
+  #   0x4b       SLOTNUM       -- push current beacon slot onto stack
   #   0x60 0x00  PUSH1 0x00    -- memory offset 0
   #   0x52       MSTORE        -- mem[0..32] = slot_number (right-aligned)
   #   0x60 0x20  PUSH1 0x20    -- return length = 32 bytes
   #   0x60 0x00  PUSH1 0x00    -- return offset = 0
   #   0xf3       RETURN        -- return mem[0..32]
   #
-  # Runtime hex: 49 60 00 52 60 20 60 00 f3  (9 bytes)
+  # Runtime hex: 4b 60 00 52 60 20 60 00 f3  (9 bytes)
   #
   # Initcode wrapping the runtime (8-byte wrapper + 9-byte runtime = 17 bytes):
   #   PUSH1 0x09   -- copy length = 9 (runtime size)
@@ -52,7 +52,7 @@ config:
   #   RETURN
   # Wrapper = 12 bytes: 6009 600c 6000 39 6009 6000 f3
   # Total initcode = 12 + 9 = 21 bytes
-  # Initcode hex: 6009600c60003960096000f3496000526020 6000f3
+  # Initcode hex: 6009600c60003960096000f34b60005260206000f3
   slotnumFactory: "0x4e59b44847b379578588920ca78fbf26c0b4956c"
   # Salt for SLOTNUM reader: 0x00..007843
   slotnumSalt: "0x0000000000000000000000000000000000000000000000000000000000007843"
@@ -100,7 +100,7 @@ tasks:
 
   # Test 1: Verify SLOTNUM opcode does not revert (basic opcode availability check)
   - name: run_shell
-    title: "Test 1: Verify SLOTNUM opcode (0x49) does not revert via eth_call"
+    title: "Test 1: Verify SLOTNUM opcode (0x4b) does not revert via eth_call"
     id: testSlotnumNoRevert
     timeout: 5m
     config:
@@ -124,7 +124,7 @@ tasks:
         # We test the SLOTNUM opcode via eth_call using a raw bytecode payload.
         # eth_call with 'to: null' executes the data as initcode in a CREATE context.
         # The initcode below:
-        #   SLOTNUM (0x49)        -- push beacon slot number
+        #   SLOTNUM (0x4b)        -- push beacon slot number
         #   PUSH1 0x00            -- memory offset
         #   MSTORE                -- store slot in mem[0..32]
         #   PUSH1 0x20            -- return 32 bytes
@@ -134,12 +134,12 @@ tasks:
         # Result: eth_call returns 32 bytes = the beacon slot number.
         # If SLOTNUM is not supported, the client returns an error or 0x / reverts.
 
-        SLOTNUM_BYTECODE="0x496000526020 6000f3"
-        SLOTNUM_BYTECODE_CLEAN="0x4960005260206000f3"
+        SLOTNUM_BYTECODE="0x4b6000526020 6000f3"
+        SLOTNUM_BYTECODE_CLEAN="0x4b60005260206000f3"
 
         echo "SLOTNUM bytecode (as initcode for eth_call): ${SLOTNUM_BYTECODE_CLEAN}"
         echo "Bytecode breakdown:"
-        echo "  0x49       SLOTNUM  -- push current beacon slot"
+        echo "  0x4b       SLOTNUM  -- push current beacon slot"
         echo "  0x60 0x00  PUSH1 0  -- memory destination offset"
         echo "  0x52       MSTORE   -- store slot number at mem[0]"
         echo "  0x60 0x20  PUSH1 32 -- return length"
@@ -161,7 +161,7 @@ tasks:
         CALL_ERROR=$(echo "${CALL_RESP}" | jq -r '.error // empty')
         if [ -n "${CALL_ERROR}" ]; then
           echo "FAIL: eth_call returned an error: ${CALL_ERROR}"
-          echo "      If the error mentions 'invalid opcode' or 'INVALID', SLOTNUM (0x49)"
+          echo "      If the error mentions 'invalid opcode' or 'INVALID', SLOTNUM (0x4b)"
           echo "      is not implemented on this client."
           exit 1
         fi
@@ -250,13 +250,13 @@ tasks:
               echo ""
 
               # SLOTNUM reader runtime (9 bytes):
-              #   49          SLOTNUM        push beacon slot number
+              #   4b          SLOTNUM        push beacon slot number
               #   60 00       PUSH1 0x00     memory offset
               #   52          MSTORE         store at mem[0]
               #   60 20       PUSH1 0x20     return 32 bytes
               #   60 00       PUSH1 0x00     from offset 0
               #   f3          RETURN
-              RUNTIME_HEX="4960005260206000f3"
+              RUNTIME_HEX="4b60005260206000f3"
               RUNTIME_LEN_BYTES=9
 
               # Initcode wrapper (12 bytes) + runtime (9 bytes) = 21 bytes total.
@@ -334,7 +334,7 @@ tasks:
               if [ "${DEPLOY_STATUS}" != "0x1" ] && [ "${DEPLOY_STATUS}" != "1" ]; then
                 echo "FAIL: SLOTNUM reader deployment failed (status=${DEPLOY_STATUS})"
                 echo "      Possible causes:"
-                echo "        - EIP-7843 SLOTNUM (0x49) not implemented (initcode reverted)"
+                echo "        - EIP-7843 SLOTNUM (0x4b) not implemented (initcode reverted)"
                 echo "        - EIP-7997 Arachnid factory not active (no code at factory)"
                 echo "        - Initcode bytecode is malformed"
                 exit 1
@@ -445,13 +445,13 @@ tasks:
         echo "================================================================"
         echo ""
         echo "EIP-7843 specification:"
-        echo "  SLOTNUM opcode: 0x49"
+        echo "  SLOTNUM opcode: 0x4b"
         echo "  Gas cost: 2 (same as TIMESTAMP/NUMBER)"
         echo "  Returns: current beacon chain slot number (uint256)"
         echo "  At epoch 2 (slot 64+), value must be >= 64"
         echo ""
-        echo "Runtime bytecode used: 0x4960005260206000f3 (9 bytes)"
-        echo "  0x49 = SLOTNUM, stores result in mem[0], returns 32 bytes"
+        echo "Runtime bytecode used: 0x4b60005260206000f3 (9 bytes)"
+        echo "  0x4b = SLOTNUM, stores result in mem[0], returns 32 bytes"
         echo ""
         echo "Test 1: SLOTNUM via eth_call (no deployment)"
         echo "  Raw result: ${ETHCALL_RESULT}"
