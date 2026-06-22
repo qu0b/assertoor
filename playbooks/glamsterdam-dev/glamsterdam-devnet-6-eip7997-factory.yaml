@@ -173,34 +173,12 @@ tasks:
               echo "Salt: ${SALT_WITH_0X}"
               echo ""
 
-              # Minimal initcode: deploys a 1-byte contract that stores the value 0x42.
-              # This uses the standard initcode wrapper pattern:
-              #   PUSH1 0x01   (runtime length = 1 byte)
-              #   PUSH1 0x0b   (offset of runtime in initcode = 11 bytes for the wrapper)
-              #   PUSH1 0x00   (dest offset in memory)
-              #   CODECOPY     (copy runtime to memory[0])
-              #   PUSH1 0x01   (return length = 1)
-              #   PUSH1 0x00   (return offset = 0)
-              #   RETURN       (return memory[0..1] as the deployed code)
-              #   [runtime: 0x42]  (1 byte of runtime bytecode = INVALID, but that's fine for presence check)
-              #
-              # Simpler approach: use "STOP" (0x00) as the sole runtime byte.
-              # Initcode: 6001 600b 6000 39 6001 6000 f3 00
-              # That's 8 bytes of initcode wrapper + 1 byte runtime = 9 bytes total.
-              # CODECOPY offset = 8 (not 11 — let's recalculate):
-              #   PUSH1 size(1)=0x60 0x01    2 bytes
-              #   PUSH1 offset(8)=0x60 0x08  2 bytes
-              #   PUSH1 destOffset(0)=0x60 0x00  2 bytes
-              #   CODECOPY=0x39              1 byte
-              #   PUSH1 size(1)=0x60 0x01    2 bytes
-              #   PUSH1 retOffset(0)=0x60 0x00  2 bytes
-              #   RETURN=0xf3                1 byte
-              #   [runtime: 0x00 = STOP]     1 byte
-              # Total: 8 wrapper bytes + 1 runtime byte = 9 bytes
-              # Runtime is at offset 8, so PUSH1 0x08 is correct.
-              #
-              # Initcode hex (9 bytes): 6001600839600160 00f300
-              INITCODE_HEX="600160083960016000f300"
+              # Minimal 4-byte initcode: deploys a 1-byte STOP contract.
+              # PUSH1 1  — return size = 1 byte
+              # PUSH0    — return offset = 0 (EIP-3855, memory is zero-initialized → mem[0]=0x00)
+              # RETURN   — deploys 1 byte: 0x00 (STOP)
+              # No CODECOPY needed; avoids any stack-depth issues.
+              INITCODE_HEX="60015ff3"
               INITCODE_WITH_0X="0x${INITCODE_HEX}"
               echo "Initcode (${#INITCODE_HEX} hex chars / $((${#INITCODE_HEX}/2)) bytes): ${INITCODE_WITH_0X}"
               echo ""

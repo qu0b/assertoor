@@ -30,7 +30,7 @@ config:
   #
   # Runtime hex: 4b 60 00 52 60 20 60 00 f3  (9 bytes)
   #
-  # Initcode wrapping the runtime (8-byte wrapper + 9-byte runtime = 17 bytes):
+  # Initcode wrapping the runtime (12-byte wrapper + 9-byte runtime = 21 bytes):
   #   PUSH1 0x09   -- copy length = 9 (runtime size)
   #   PUSH1 0x08   -- copy source offset = 8 (runtime starts after 8-byte wrapper)
   #   PUSH1 0x00   -- copy dest offset = 0

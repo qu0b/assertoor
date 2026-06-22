@@ -27,10 +27,10 @@ tasks:
     title: "Get consensus chain specs"
 
   - name: check_consensus_slot_range
-    title: "Wait for Amsterdam EL fork activation (epoch 1)"
+    title: "Wait for network to be stable (epoch 2)"
     timeout: 1h
-    configVars:
-      minEpochNumber: "tasks.consensusSpecs.outputs.specs.AMSTERDAM_FORK_EPOCH"
+    config:
+      minEpochNumber: 2
 
   # install foundry (cast) for sending transactions and querying chain state
   - name: run_shell
