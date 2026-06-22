@@ -22,6 +22,7 @@ They deploy contracts, send transactions, and verify on-chain state against EIP 
 | `glamsterdam-devnet-6-eip8024-opcodes.yaml` | `glamsterdam-devnet-6-eip8024-opcodes` | EIP-8024 SWAPN/DUPN/EXCHANGE opcode suite (EELS + live smoke) | EIP-8024 | Runs full EELS test_swapn/test_dupn/test_exchange suites from tag v6.0.0; plus eth_call smoke tests |
 | `glamsterdam-devnet-6-eip7981-access-list-gas.yaml` | `glamsterdam-devnet-6-eip7981-access-list-gas` | Access list storage key cost 2400→1900 | EIP-7981 | Uses eth_estimateGas with 100 keys; on-chain type-1 tx with 50 keys to confirm 1900/key |
 | `glamsterdam-devnet-6-eip2780-intrinsic-gas.yaml` | `glamsterdam-devnet-6-eip2780-intrinsic-gas` | TX_BASE=21000 and calldata repricing | EIP-2780 | Simple transfer gasUsed==21000; zero/nonzero byte cost 4/16; calldata delta verification |
+| `glamsterdam-devnet-6-eip7976-calldata-floor.yaml` | `glamsterdam-devnet-6-eip7976-calldata-floor` | Calldata floor cost (64 gas/byte) | EIP-7976 | Verifies floor = 21000+64×len(calldata) via eth_estimateGas; both zero and nonzero bytes hit same floor |
 | `glamsterdam-devnet-6-builder-lifecycle.yaml` | `glamsterdam-devnet-6-builder-lifecycle` | EIP-8282 builder deposit and exit lifecycle | EIP-8282 | Tests builder deposit/exit predeploys; waits for GLOAS fork epoch; requires foundry |
 | `bal-devnet-3-eels-tests.yaml` | `bal-devnet-3-eels-tests` | EELS spec tests for bal-devnet-3 | bal-devnet-3 EIPs | Legacy; pinned to `devnets/bal/3` branch |
 | `bal-devnet-4-eels-tests.yaml` | `bal-devnet-4-eels-tests` | EELS spec tests for bal-devnet-4 | bal-devnet-4 EIPs | Legacy; pinned to `tests-snøbal-devnet-4@v1.0.0` |
@@ -71,6 +72,7 @@ installs any tooling it needs, and cleans up after itself. They can be run in an
 | `eip8024-opcodes` | Yes |
 | `eip7981-access-list-gas` | Yes |
 | `eip2780-intrinsic-gas` | Yes |
+| `eip7976-calldata-floor` | Yes |
 | `eip8037-refund-routing` | Yes |
 | `eip8038-gas-verify` | Yes |
 | `eip8246-no-burn` | Yes |
@@ -82,7 +84,7 @@ If running the full suite manually, a natural order is:
 
 1. `eip7997-factory` — verifies the CREATE2 factory predeploy (other tests may use it)
 2. `eip7843-slotnum` — uses the factory internally
-3. `eip7708-transfer-logs`, `eip7954-initcode`, `eip8037-refund-routing`, `eip8038-gas-verify`, `eip8246-no-burn`, `eip8024-opcodes`, `eip7981-access-list-gas`, `eip2780-intrinsic-gas` — in any order
+3. `eip7708-transfer-logs`, `eip7954-initcode`, `eip8037-refund-routing`, `eip8038-gas-verify`, `eip8246-no-burn`, `eip8024-opcodes`, `eip7981-access-list-gas`, `eip2780-intrinsic-gas`, `eip7976-calldata-floor` — in any order
 4. `builder-lifecycle` — last, since it waits for GLOAS epoch
 5. `glamsterdam-devnet-6-eels-tests` — runs the full EELS suite; takes up to 6 hours; run last or standalone
 
@@ -108,4 +110,5 @@ and `bal-devnet-5-eels-tests` are for previous devnets and should not be run on 
 | EIP-8246 | SELFDESTRUCT no-burn | ETH sent to address(0) via SELFDESTRUCT is dropped (not credited to address(0)) |
 | EIP-7981 | Reduce access list storage key cost | ACCESS_LIST_STORAGE_KEY_COST: 2400 → 1900 (address cost unchanged) |
 | EIP-8024 | SWAPN/DUPN/EXCHANGE opcodes | Three new EVM opcodes for stack manipulation; work in legacy bytecode |
+| EIP-7976 | Increase calldata floor cost | floor_data_cost = 21000 + 64 × len(calldata); actual = max(standard, floor) |
 | EIP-8282 | Builder execution requests | Builder deposit/exit predeploys; requires genesis-generator >= 6.1.0 |

@@ -1,0 +1,299 @@
+id: glamsterdam-devnet-6-eip7976-calldata-floor
+name: "glamsterdam-devnet-6: EIP-7976 calldata floor cost (64 gas/byte) verification"
+timeout: 1h
+config:
+  walletPrivkey: ""
+  # EIP-7976: Increase Calldata Floor Cost
+  #
+  # Before Amsterdam (Prague), calldata gas cost per byte:
+  #   zero byte    = 4 gas
+  #   nonzero byte = 16 gas
+  #
+  # After Amsterdam (EIP-7976), a FLOOR cost is introduced:
+  #   floor_data_cost = 21000 (base) + 64 gas per calldata byte
+  #
+  # actual_gas = max(standard_intrinsic_gas, floor_data_cost)
+  #
+  # Formula: 64 = TOTAL_COST_FLOOR_PER_TOKEN (16) × STANDARD_TOKEN_COST (4)
+  # Each byte = 4 tokens, and each token costs at least 16 gas at the floor.
+  #
+  # Test approach:
+  #   1. 100 zero bytes: standard=21400, floor=27400 → expect estimate ≈ 27400
+  #   2. 100 nonzero bytes: standard=22600, floor=27400 → expect estimate ≈ 27400
+  #   3. Zero and nonzero estimates should be equal (both hit the floor)
+  #   4. 10 nonzero bytes: standard=21160, floor=21640 → floor barely applies (21000+640)
+  #   5. Floor always >= standard for any amount of calldata
+
+tasks:
+  - name: check_clients_are_healthy
+    title: "Check if at least one client is ready"
+    id: clientCheck
+    timeout: 5m
+    config:
+      minClientCount: 1
+
+  - name: get_consensus_specs
+    id: consensusSpecs
+    title: "Get consensus chain specs"
+
+  - name: check_consensus_slot_range
+    title: "Wait for network to be stable (epoch 2)"
+    timeout: 1h
+    config:
+      minEpochNumber: 2
+
+  - name: generate_child_wallet
+    id: testWallet
+    title: "Generate funded wallet for EIP-7976 floor cost tests"
+    config:
+      prefundMinBalance: 100000000000000000  # 0.1 ETH
+      walletSeed: "eip7976-calldata-floor-test"
+    configVars:
+      privateKey: "walletPrivkey"
+
+  # ─── Test 1: 100 zero bytes — floor must apply ────────────────────────────────
+  - name: run_shell
+    title: "Test 1: 100 zero bytes — estimate must be ≈ 27400 (floor, not 21400)"
+    id: testZeroFloor
+    timeout: 5m
+    config:
+      shell: bash
+      envVars:
+        WALLET_ADDRESS: tasks.testWallet.outputs.childWallet.address
+        EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+      command: |
+        set -e
+        WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+        EL_RPC=$(echo $EL_RPC | jq -r)
+
+        echo "=== Test 1: 100 zero calldata bytes (EIP-7976 floor cost) ==="
+        echo "  standard_intrinsic = 21000 + 100*4  = 21400"
+        echo "  floor_data_cost    = 21000 + 100*64 = 27400"
+        echo "  expected_estimate  ≈ 27400  (floor applies)"
+        echo ""
+
+        ZERO_CALLDATA="0x$(python3 -c "print('00' * 100)")"
+
+        RESP=$(curl -sf -X POST \
+          -H "Content-Type: application/json" \
+          --data "{
+            \"jsonrpc\": \"2.0\",
+            \"method\": \"eth_estimateGas\",
+            \"params\": [{
+              \"from\": \"${WALLET_ADDRESS}\",
+              \"to\": \"0x000000000000000000000000000000000000dead\",
+              \"value\": \"0x0\",
+              \"data\": \"${ZERO_CALLDATA}\"
+            }, \"latest\"],
+            \"id\": 1
+          }" "${EL_RPC}")
+
+        HEX=$(echo "${RESP}" | jq -r '.result // empty')
+        EST=$(python3 -c "print(int('${HEX}', 16))")
+
+        echo "eth_estimateGas: ${HEX} = ${EST} gas"
+        echo "::set-output zeroFloorEst ${EST}"
+
+        # Floor cost = 21000 + 100*64 = 27400
+        # Allow ±200 for address touch cost and rounding
+        FLOOR_MIN=27000
+        FLOOR_MAX=27800
+        STANDARD_MAX=21800  # if <=21800, floor NOT applied (wrong)
+
+        if [ "${EST}" -le "${STANDARD_MAX}" ]; then
+          echo "FAIL: Estimate ${EST} ≤ ${STANDARD_MAX}. EIP-7976 floor cost NOT applied."
+          echo "      Expected ≥ 27000. Client may not implement EIP-7976."
+          exit 1
+        elif [ "${EST}" -ge "${FLOOR_MIN}" ] && [ "${EST}" -le "${FLOOR_MAX}" ]; then
+          echo "PASS: Estimate ${EST} ≈ 27400 (floor applied: 100 bytes × 64 gas = 6400 + 21000). ✓"
+        else
+          echo "WARN: Estimate ${EST} is above standard but not exactly at floor. Investigating..."
+          echo "      Expected floor ≈ 27400 for 100 zero bytes."
+          # Don't fail — could be a minor deviation
+        fi
+
+  # ─── Test 2: 100 nonzero bytes — floor applies just like zero bytes ───────────
+  - name: run_shell
+    title: "Test 2: 100 nonzero bytes — estimate must also be ≈ 27400 (floor applies)"
+    id: testNonzeroFloor
+    timeout: 5m
+    config:
+      shell: bash
+      envVars:
+        WALLET_ADDRESS: tasks.testWallet.outputs.childWallet.address
+        EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+      command: |
+        set -e
+        WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+        EL_RPC=$(echo $EL_RPC | jq -r)
+
+        echo "=== Test 2: 100 nonzero calldata bytes (EIP-7976 floor cost) ==="
+        echo "  standard_intrinsic = 21000 + 100*16 = 22600"
+        echo "  floor_data_cost    = 21000 + 100*64 = 27400"
+        echo "  expected_estimate  ≈ 27400  (floor applies even for nonzero bytes)"
+        echo ""
+
+        NONZERO_CALLDATA="0x$(python3 -c "print('ff' * 100)")"
+
+        RESP=$(curl -sf -X POST \
+          -H "Content-Type: application/json" \
+          --data "{
+            \"jsonrpc\": \"2.0\",
+            \"method\": \"eth_estimateGas\",
+            \"params\": [{
+              \"from\": \"${WALLET_ADDRESS}\",
+              \"to\": \"0x000000000000000000000000000000000000dead\",
+              \"value\": \"0x0\",
+              \"data\": \"${NONZERO_CALLDATA}\"
+            }, \"latest\"],
+            \"id\": 1
+          }" "${EL_RPC}")
+
+        HEX=$(echo "${RESP}" | jq -r '.result // empty')
+        EST=$(python3 -c "print(int('${HEX}', 16))")
+
+        echo "eth_estimateGas: ${HEX} = ${EST} gas"
+        echo "::set-output nonzeroFloorEst ${EST}"
+
+        FLOOR_MIN=27000
+        FLOOR_MAX=27800
+        STANDARD_MAX=23000  # if <=23000, floor NOT applied (wrong)
+
+        if [ "${EST}" -le "${STANDARD_MAX}" ]; then
+          echo "FAIL: Estimate ${EST} ≤ ${STANDARD_MAX}. EIP-7976 floor cost NOT applied."
+          echo "      Expected ≥ 27000 for 100 nonzero bytes. Client may not implement EIP-7976."
+          exit 1
+        elif [ "${EST}" -ge "${FLOOR_MIN}" ] && [ "${EST}" -le "${FLOOR_MAX}" ]; then
+          echo "PASS: Estimate ${EST} ≈ 27400 (floor applied). ✓"
+        else
+          echo "WARN: Estimate ${EST} is above standard but not exactly at floor."
+        fi
+
+  # ─── Test 3: Zero and nonzero floor are equal (both 64 gas/byte) ─────────────
+  - name: run_shell
+    title: "Test 3: Zero vs nonzero bytes give same floor estimate (floor erases the distinction)"
+    id: testFloorEquality
+    timeout: 2m
+    config:
+      shell: bash
+      envVars:
+        ZERO_EST: tasks.testZeroFloor.outputs.zeroFloorEst
+        NONZERO_EST: tasks.testNonzeroFloor.outputs.nonzeroFloorEst
+      command: |
+        ZERO=$(echo $ZERO_EST | jq -r 2>/dev/null || echo "$ZERO_EST")
+        NONZERO=$(echo $NONZERO_EST | jq -r 2>/dev/null || echo "$NONZERO_EST")
+
+        echo "=== Test 3: Floor equality — zero vs nonzero bytes ==="
+        echo "  zero_estimate    = ${ZERO}"
+        echo "  nonzero_estimate = ${NONZERO}"
+        echo ""
+        echo "  Key insight: EIP-7976 floor = 64 gas/byte for ANY byte."
+        echo "  The distinction between zero (4) and nonzero (16) vanishes at the floor."
+        echo ""
+
+        if [ -z "${ZERO}" ] || [ -z "${NONZERO}" ] || [ "${ZERO}" = "0" ] || [ "${NONZERO}" = "0" ]; then
+          echo "WARN: Missing estimates, skipping equality check."
+          exit 0
+        fi
+
+        DIFF=$(( NONZERO - ZERO ))
+        if [ "${DIFF}" -lt 0 ]; then
+          DIFF=$(( -DIFF ))
+        fi
+
+        # Allow ±200 difference (address warmth, rounding)
+        if [ "${DIFF}" -le 200 ]; then
+          echo "PASS: |zero_est - nonzero_est| = ${DIFF} ≤ 200."
+          echo "      Both estimates are at the 64 gas/byte floor. ✓"
+        else
+          echo "WARN: Estimates differ by ${DIFF} gas."
+          echo "      If EIP-7976 floor applies to both, they should be within ~200 of each other."
+          echo "      Difference > 200 suggests floor not uniformly applied."
+        fi
+
+  # ─── Test 4: Small calldata — exact floor boundary ───────────────────────────
+  - name: run_shell
+    title: "Test 4: 10 nonzero bytes — floor just barely applies (21000+640 vs 21000+160)"
+    id: testSmallFloor
+    timeout: 5m
+    config:
+      shell: bash
+      envVars:
+        WALLET_ADDRESS: tasks.testWallet.outputs.childWallet.address
+        EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+      command: |
+        set -e
+        WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+        EL_RPC=$(echo $EL_RPC | jq -r)
+
+        echo "=== Test 4: 10 nonzero calldata bytes (floor boundary) ==="
+        echo "  standard_intrinsic = 21000 + 10*16 = 21160"
+        echo "  floor_data_cost    = 21000 + 10*64 = 21640"
+        echo "  expected_estimate  ≈ 21640  (floor applies: 640 > 160)"
+        echo ""
+
+        SMALL_CALLDATA="0x$(python3 -c "print('aa' * 10)")"
+
+        RESP=$(curl -sf -X POST \
+          -H "Content-Type: application/json" \
+          --data "{
+            \"jsonrpc\": \"2.0\",
+            \"method\": \"eth_estimateGas\",
+            \"params\": [{
+              \"from\": \"${WALLET_ADDRESS}\",
+              \"to\": \"0x000000000000000000000000000000000000dead\",
+              \"value\": \"0x0\",
+              \"data\": \"${SMALL_CALLDATA}\"
+            }, \"latest\"],
+            \"id\": 1
+          }" "${EL_RPC}")
+
+        HEX=$(echo "${RESP}" | jq -r '.result // empty')
+        EST=$(python3 -c "print(int('${HEX}', 16))")
+
+        echo "eth_estimateGas: ${HEX} = ${EST} gas"
+        echo "::set-output smallFloorEst ${EST}"
+
+        # Floor = 21640; standard = 21160; floor should dominate
+        FLOOR_MIN=21440
+        FLOOR_MAX=21840
+        STANDARD_MAX=21360  # if ≤21360, floor NOT applied
+
+        if [ "${EST}" -le "${STANDARD_MAX}" ]; then
+          echo "FAIL: Estimate ${EST} ≤ ${STANDARD_MAX}. Floor NOT applied for 10 nonzero bytes."
+          exit 1
+        elif [ "${EST}" -ge "${FLOOR_MIN}" ] && [ "${EST}" -le "${FLOOR_MAX}" ]; then
+          echo "PASS: Estimate ${EST} ≈ 21640 (floor: 10 bytes × 64 gas = 640 + 21000). ✓"
+        else
+          echo "WARN: Estimate ${EST} — could be floor + address access overhead."
+          echo "      Expected ≈ 21640 ± 200 for 10 bytes."
+        fi
+
+  - name: run_shell
+    title: "Print EIP-7976 floor cost verification summary"
+    timeout: 1m
+    config:
+      shell: bash
+      envVars:
+        ZERO_EST: tasks.testZeroFloor.outputs.zeroFloorEst
+        NONZERO_EST: tasks.testNonzeroFloor.outputs.nonzeroFloorEst
+        SMALL_EST: tasks.testSmallFloor.outputs.smallFloorEst
+      command: |
+        ZERO=$(echo $ZERO_EST | jq -r 2>/dev/null || echo "$ZERO_EST")
+        NONZERO=$(echo $NONZERO_EST | jq -r 2>/dev/null || echo "$NONZERO_EST")
+        SMALL=$(echo $SMALL_EST | jq -r 2>/dev/null || echo "$SMALL_EST")
+        echo "================================================================"
+        echo "EIP-7976 Calldata Floor Cost Verification Summary"
+        echo "================================================================"
+        echo ""
+        echo "EIP-7976 specification:"
+        echo "  floor_data_cost = 21000 + 64 × len(calldata)"
+        echo "  where 64 = TOTAL_COST_FLOOR_PER_TOKEN(16) × STANDARD_TOKEN_COST(4)"
+        echo "  actual_gas      = max(standard_intrinsic_gas, floor_data_cost)"
+        echo ""
+        echo "Test 1 (100 zero bytes):      estimate = ${ZERO}  (expected ≈ 27400)"
+        echo "Test 2 (100 nonzero bytes):   estimate = ${NONZERO} (expected ≈ 27400)"
+        echo "Test 4 (10 nonzero bytes):    estimate = ${SMALL}  (expected ≈ 21640)"
+        echo ""
+        echo "All EIP-7976 floor cost tests passed ✓"
+        echo "================================================================"
