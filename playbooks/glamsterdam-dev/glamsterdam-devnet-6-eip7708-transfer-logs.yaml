@@ -1,0 +1,432 @@
+id: glamsterdam-devnet-6-eip7708-transfer-logs
+name: "glamsterdam-devnet-6: EIP-7708 live ETH transfer log emission test"
+timeout: 2h
+config:
+  walletPrivkey: ""
+  # EIP-7708: ETH transfers emit Transfer(address,address,uint256) logs from this system address
+  # Source: ethereum/execution-specs src/ethereum/forks/amsterdam/vm/__init__.py
+  # SYSTEM_ADDRESS = bytes.fromhex("fffffffffffffffffffffffffffffffffffffffe")
+  transferLogAddress: "0xfffffffffffffffffffffffffffffffffffffffe"
+  # keccak256("Transfer(address,address,uint256)") = 0xddf252ad...
+  transferTopic: "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+tasks:
+  - name: check_clients_are_healthy
+    title: "Check if at least one client is ready"
+    id: clientCheck
+    timeout: 5m
+    config:
+      minClientCount: 1
+
+  # Wait for Amsterdam EL fork activation.
+  # Amsterdam is the EL fork carrying EIP-7708. We wait for a few blocks past
+  # the fork to ensure the EL is running Amsterdam rules before sending the
+  # test transaction.
+  - name: get_consensus_specs
+    id: consensusSpecs
+    title: "Get consensus chain specs"
+
+  - name: check_consensus_slot_range
+    title: "Wait for Amsterdam EL fork activation (epoch 1)"
+    timeout: 1h
+    configVars:
+      minEpochNumber: "tasks.consensusSpecs.outputs.specs.AMSTERDAM_FORK_EPOCH"
+
+  # install foundry (cast) for sending transactions and querying chain state
+  - name: run_shell
+    title: "Install foundry (cast)"
+    id: installFoundry
+    timeout: 10m
+    config:
+      shell: bash
+      shellArgs: [--login]
+      command: |
+        set -e
+        FOUNDRY_HOME=$(mktemp -d -t foundry-XXXXXXXXXX)
+        echo "::set-output foundryHome ${FOUNDRY_HOME}"
+        export HOME=${FOUNDRY_HOME}
+        curl -L https://foundry.paradigm.xyz | bash
+        source ${FOUNDRY_HOME}/.bashrc || true
+        ${FOUNDRY_HOME}/.foundry/bin/foundryup
+        if [ ! -f "${FOUNDRY_HOME}/.foundry/bin/cast" ]; then
+          echo "cast not found after foundryup"
+          exit 1
+        fi
+        echo "cast installed at ${FOUNDRY_HOME}/.foundry/bin/cast"
+
+  # Test 1: Simple EOA-to-EOA ETH transfer emits Transfer log
+  - name: run_tasks
+    title: "Test 1: Simple ETH transfer emits Transfer log"
+    id: testSimpleTransfer
+    config:
+      continueOnFailure: false
+      tasks:
+        - name: generate_child_wallet
+          id: transferWallet
+          title: "Generate funded wallet for ETH transfer test"
+          config:
+            prefundMinBalance: 1000000000000000000000  # 1000 ETH
+            walletSeed: "eip7708-transfer-log-test"
+          configVars:
+            privateKey: "walletPrivkey"
+
+        - name: run_shell
+          title: "Send 1 ETH to a new address"
+          id: sendTransfer
+          timeout: 5m
+          config:
+            shell: bash
+            shellArgs: [--login]
+            envVars:
+              WALLET_PRIVKEY: tasks.transferWallet.outputs.childWallet.privkey
+              WALLET_ADDRESS: tasks.transferWallet.outputs.childWallet.address
+              EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+              FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+            command: |
+              set -e
+              WALLET_PRIVKEY=$(echo $WALLET_PRIVKEY | jq -r)
+              WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+              EL_RPC=$(echo $EL_RPC | jq -r)
+              FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+
+              export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+              export HOME=${FOUNDRY_HOME}
+
+              # Generate a deterministic recipient address (different from sender)
+              RECIPIENT="0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead"
+
+              echo "Sender:    ${WALLET_ADDRESS}"
+              echo "Recipient: ${RECIPIENT}"
+              echo "RPC:       ${EL_RPC}"
+
+              BALANCE=$(cast balance ${WALLET_ADDRESS} --rpc-url ${EL_RPC})
+              echo "Wallet balance: ${BALANCE} wei"
+
+              # Send 1 ETH from test wallet to recipient
+              TX_HASH=$(cast send ${RECIPIENT} \
+                --value 1ether \
+                --private-key ${WALLET_PRIVKEY} \
+                --rpc-url ${EL_RPC} \
+                --json | jq -r '.transactionHash')
+
+              echo "Transfer tx hash: ${TX_HASH}"
+              echo "::set-output transferTxHash ${TX_HASH}"
+              echo "::set-output senderAddress ${WALLET_ADDRESS}"
+              echo "::set-output recipientAddress ${RECIPIENT}"
+
+        - name: run_shell
+          title: "Verify Transfer log in eth_getTransactionReceipt"
+          id: verifyReceiptLog
+          timeout: 5m
+          config:
+            shell: bash
+            shellArgs: [--login]
+            envVars:
+              TX_HASH: tasks.sendTransfer.outputs.transferTxHash
+              SENDER: tasks.sendTransfer.outputs.senderAddress
+              RECIPIENT: tasks.sendTransfer.outputs.recipientAddress
+              TRANSFER_LOG_ADDR: transferLogAddress
+              TRANSFER_TOPIC: transferTopic
+              EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+              FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+            command: |
+              set -e
+              TX_HASH=$(echo $TX_HASH | jq -r)
+              SENDER=$(echo $SENDER | jq -r)
+              RECIPIENT=$(echo $RECIPIENT | jq -r)
+              TRANSFER_LOG_ADDR=$(echo $TRANSFER_LOG_ADDR | jq -r)
+              TRANSFER_TOPIC=$(echo $TRANSFER_TOPIC | jq -r)
+              EL_RPC=$(echo $EL_RPC | jq -r)
+              FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+
+              export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+              export HOME=${FOUNDRY_HOME}
+
+              echo "Checking receipt for tx: ${TX_HASH}"
+              echo "Expected Transfer log from: ${TRANSFER_LOG_ADDR}"
+              echo "Expected Transfer topic:    ${TRANSFER_TOPIC}"
+
+              # Fetch receipt via JSON-RPC
+              RECEIPT=$(curl -s -X POST \
+                -H "Content-Type: application/json" \
+                --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\",\"params\":[\"${TX_HASH}\"],\"id\":1}" \
+                ${EL_RPC})
+
+              echo "Raw receipt:"
+              echo "${RECEIPT}" | jq '.'
+
+              # Check tx succeeded
+              STATUS=$(echo "${RECEIPT}" | jq -r '.result.status')
+              if [ "${STATUS}" != "0x1" ] && [ "${STATUS}" != "1" ]; then
+                echo "FAIL: Transfer transaction failed (status=${STATUS})"
+                exit 1
+              fi
+
+              BLOCK_NUMBER=$(echo "${RECEIPT}" | jq -r '.result.blockNumber')
+              echo "Tx included in block: ${BLOCK_NUMBER}"
+              echo "::set-output transferBlockNumber ${BLOCK_NUMBER}"
+
+              # EIP-7708: a nonzero-value transfer MUST emit a Transfer log
+              LOG_COUNT=$(echo "${RECEIPT}" | jq -r '.result.logs | length')
+              echo "Log count in receipt: ${LOG_COUNT}"
+
+              if [ "${LOG_COUNT}" = "0" ] || [ "${LOG_COUNT}" = "null" ]; then
+                echo "FAIL: Expected at least 1 Transfer log from EIP-7708, got ${LOG_COUNT}"
+                echo "This client does not appear to implement EIP-7708 log emission."
+                exit 1
+              fi
+
+              # Verify the first log is the EIP-7708 Transfer log
+              LOG_ADDR=$(echo "${RECEIPT}" | jq -r '.result.logs[0].address')
+              LOG_TOPIC0=$(echo "${RECEIPT}" | jq -r '.result.logs[0].topics[0]')
+              LOG_TOPIC1=$(echo "${RECEIPT}" | jq -r '.result.logs[0].topics[1]')
+              LOG_TOPIC2=$(echo "${RECEIPT}" | jq -r '.result.logs[0].topics[2]')
+              LOG_DATA=$(echo "${RECEIPT}" | jq -r '.result.logs[0].data')
+
+              echo "Log[0].address: ${LOG_ADDR}"
+              echo "Log[0].topics[0] (event sig):  ${LOG_TOPIC0}"
+              echo "Log[0].topics[1] (sender):     ${LOG_TOPIC1}"
+              echo "Log[0].topics[2] (recipient):  ${LOG_TOPIC2}"
+              echo "Log[0].data (amount):          ${LOG_DATA}"
+
+              # Normalize to lowercase for comparison
+              LOG_ADDR_LC=$(echo "${LOG_ADDR}" | tr '[:upper:]' '[:lower:]')
+              TRANSFER_LOG_ADDR_LC=$(echo "${TRANSFER_LOG_ADDR}" | tr '[:upper:]' '[:lower:]')
+              LOG_TOPIC0_LC=$(echo "${LOG_TOPIC0}" | tr '[:upper:]' '[:lower:]')
+              TRANSFER_TOPIC_LC=$(echo "${TRANSFER_TOPIC}" | tr '[:upper:]' '[:lower:]')
+
+              # Check emitting address is the EIP-7708 system address (0xff...fe)
+              if [ "${LOG_ADDR_LC}" != "${TRANSFER_LOG_ADDR_LC}" ]; then
+                echo "FAIL: Expected log from system address ${TRANSFER_LOG_ADDR_LC}, got ${LOG_ADDR_LC}"
+                exit 1
+              fi
+              echo "PASS: Log emitted from correct system address ${TRANSFER_LOG_ADDR_LC}"
+
+              # Check topic[0] matches Transfer(address,address,uint256) signature
+              if [ "${LOG_TOPIC0_LC}" != "${TRANSFER_TOPIC_LC}" ]; then
+                echo "FAIL: Expected Transfer topic ${TRANSFER_TOPIC_LC}, got ${LOG_TOPIC0_LC}"
+                echo "Hint: keccak256(\"Transfer(address,address,uint256)\") = ${TRANSFER_TOPIC_LC}"
+                exit 1
+              fi
+              echo "PASS: Transfer event signature matches (topic[0] correct)"
+
+              # Verify topic[1] encodes the sender address (left-padded to 32 bytes)
+              SENDER_LC=$(echo "${SENDER}" | tr '[:upper:]' '[:lower:]' | sed 's/0x//')
+              EXPECTED_TOPIC1="0x000000000000000000000000${SENDER_LC}"
+              LOG_TOPIC1_LC=$(echo "${LOG_TOPIC1}" | tr '[:upper:]' '[:lower:]')
+              if [ "${LOG_TOPIC1_LC}" != "${EXPECTED_TOPIC1}" ]; then
+                echo "FAIL: topic[1] (sender) mismatch: expected ${EXPECTED_TOPIC1}, got ${LOG_TOPIC1_LC}"
+                exit 1
+              fi
+              echo "PASS: topic[1] encodes sender address correctly"
+
+              # Verify topic[2] encodes the recipient address (left-padded to 32 bytes)
+              RECIPIENT_LC=$(echo "${RECIPIENT}" | tr '[:upper:]' '[:lower:]' | sed 's/0x//')
+              EXPECTED_TOPIC2="0x000000000000000000000000${RECIPIENT_LC}"
+              LOG_TOPIC2_LC=$(echo "${LOG_TOPIC2}" | tr '[:upper:]' '[:lower:]')
+              if [ "${LOG_TOPIC2_LC}" != "${EXPECTED_TOPIC2}" ]; then
+                echo "FAIL: topic[2] (recipient) mismatch: expected ${EXPECTED_TOPIC2}, got ${LOG_TOPIC2_LC}"
+                exit 1
+              fi
+              echo "PASS: topic[2] encodes recipient address correctly"
+
+              # Verify data encodes 1 ETH = 1000000000000000000 wei (32-byte big-endian)
+              EXPECTED_DATA="0x0000000000000000000000000000000000000000000000000de0b6b3a7640000"
+              LOG_DATA_LC=$(echo "${LOG_DATA}" | tr '[:upper:]' '[:lower:]')
+              if [ "${LOG_DATA_LC}" != "${EXPECTED_DATA}" ]; then
+                echo "FAIL: data (transfer amount) mismatch: expected ${EXPECTED_DATA} (1 ETH), got ${LOG_DATA_LC}"
+                exit 1
+              fi
+              echo "PASS: data encodes 1 ETH transfer amount correctly"
+
+              echo "::set-output receiptLogVerified true"
+
+        - name: run_shell
+          title: "Verify Transfer log via eth_getLogs"
+          id: verifyGetLogs
+          timeout: 5m
+          config:
+            shell: bash
+            shellArgs: [--login]
+            envVars:
+              TX_HASH: tasks.sendTransfer.outputs.transferTxHash
+              SENDER: tasks.sendTransfer.outputs.senderAddress
+              RECIPIENT: tasks.sendTransfer.outputs.recipientAddress
+              BLOCK_NUMBER: tasks.verifyReceiptLog.outputs.transferBlockNumber
+              TRANSFER_LOG_ADDR: transferLogAddress
+              TRANSFER_TOPIC: transferTopic
+              EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+              FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+            command: |
+              set -e
+              TX_HASH=$(echo $TX_HASH | jq -r)
+              SENDER=$(echo $SENDER | jq -r)
+              RECIPIENT=$(echo $RECIPIENT | jq -r)
+              BLOCK_NUMBER=$(echo $BLOCK_NUMBER | jq -r)
+              TRANSFER_LOG_ADDR=$(echo $TRANSFER_LOG_ADDR | jq -r)
+              TRANSFER_TOPIC=$(echo $TRANSFER_TOPIC | jq -r)
+              EL_RPC=$(echo $EL_RPC | jq -r)
+              FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+
+              export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+              export HOME=${FOUNDRY_HOME}
+
+              echo "Querying eth_getLogs for block ${BLOCK_NUMBER}, address ${TRANSFER_LOG_ADDR}"
+
+              # Query eth_getLogs filtered to the system address in the transfer block
+              LOGS=$(curl -s -X POST \
+                -H "Content-Type: application/json" \
+                --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getLogs\",\"params\":[{\"fromBlock\":\"${BLOCK_NUMBER}\",\"toBlock\":\"${BLOCK_NUMBER}\",\"address\":\"${TRANSFER_LOG_ADDR}\",\"topics\":[\"${TRANSFER_TOPIC}\"]}],\"id\":1}" \
+                ${EL_RPC})
+
+              echo "eth_getLogs response:"
+              echo "${LOGS}" | jq '.'
+
+              LOG_COUNT=$(echo "${LOGS}" | jq '.result | length')
+              echo "Matching logs returned: ${LOG_COUNT}"
+
+              if [ "${LOG_COUNT}" = "0" ] || [ "${LOG_COUNT}" = "null" ]; then
+                echo "FAIL: eth_getLogs returned no Transfer logs for block ${BLOCK_NUMBER}"
+                echo "The log was visible in the receipt but not via eth_getLogs — this is an EL bug."
+                exit 1
+              fi
+
+              # Find the log matching our tx hash
+              MATCHING=$(echo "${LOGS}" | jq --arg txhash "${TX_HASH}" \
+                '[.result[] | select(.transactionHash == $txhash)] | length')
+              echo "Logs matching our tx hash (${TX_HASH}): ${MATCHING}"
+
+              if [ "${MATCHING}" = "0" ] || [ "${MATCHING}" = "null" ]; then
+                echo "FAIL: No log matching tx hash ${TX_HASH} found via eth_getLogs"
+                exit 1
+              fi
+
+              echo "PASS: eth_getLogs correctly surfaces EIP-7708 Transfer log"
+              echo "::set-output getLogsVerified true"
+
+  # Test 2: Zero-value transfer must NOT emit a Transfer log
+  - name: run_tasks
+    title: "Test 2: Zero-value ETH transfer does NOT emit Transfer log"
+    id: testZeroValueTransfer
+    config:
+      continueOnFailure: false
+      tasks:
+        - name: generate_child_wallet
+          id: zeroTransferWallet
+          title: "Generate funded wallet for zero-value transfer test"
+          config:
+            prefundMinBalance: 1000000000000000000000  # 1000 ETH
+            walletSeed: "eip7708-zero-value-transfer-test"
+          configVars:
+            privateKey: "walletPrivkey"
+
+        - name: run_shell
+          title: "Send 0 ETH and verify no Transfer log is emitted"
+          id: sendZeroTransfer
+          timeout: 5m
+          config:
+            shell: bash
+            shellArgs: [--login]
+            envVars:
+              WALLET_PRIVKEY: tasks.zeroTransferWallet.outputs.childWallet.privkey
+              WALLET_ADDRESS: tasks.zeroTransferWallet.outputs.childWallet.address
+              TRANSFER_TOPIC: transferTopic
+              EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+              FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+            command: |
+              set -e
+              WALLET_PRIVKEY=$(echo $WALLET_PRIVKEY | jq -r)
+              WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+              TRANSFER_TOPIC=$(echo $TRANSFER_TOPIC | jq -r)
+              EL_RPC=$(echo $EL_RPC | jq -r)
+              FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+
+              export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+              export HOME=${FOUNDRY_HOME}
+
+              RECIPIENT="0xbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef"
+              echo "Sender:    ${WALLET_ADDRESS}"
+              echo "Recipient: ${RECIPIENT}"
+              echo "Value:     0 ETH (zero-value — must NOT emit Transfer log per EIP-7708)"
+
+              TX_HASH=$(cast send ${RECIPIENT} \
+                --value 0 \
+                --private-key ${WALLET_PRIVKEY} \
+                --rpc-url ${EL_RPC} \
+                --json | jq -r '.transactionHash')
+
+              echo "Zero-value tx hash: ${TX_HASH}"
+
+              # Fetch receipt and verify no Transfer logs are present
+              RECEIPT=$(curl -s -X POST \
+                -H "Content-Type: application/json" \
+                --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\",\"params\":[\"${TX_HASH}\"],\"id\":1}" \
+                ${EL_RPC})
+
+              echo "Receipt:"
+              echo "${RECEIPT}" | jq '.'
+
+              # Filter for Transfer logs specifically (topic[0] matches Transfer sig)
+              TRANSFER_LOG_COUNT=$(echo "${RECEIPT}" | jq --arg topic "${TRANSFER_TOPIC}" \
+                '[.result.logs[] | select(.topics[0] == $topic)] | length')
+
+              echo "Transfer logs in receipt: ${TRANSFER_LOG_COUNT}"
+
+              if [ "${TRANSFER_LOG_COUNT}" != "0" ] && [ "${TRANSFER_LOG_COUNT}" != "null" ]; then
+                echo "FAIL: Zero-value transfer emitted ${TRANSFER_LOG_COUNT} Transfer log(s) — violates EIP-7708"
+                echo "EIP-7708 states: if transfer_amount == 0, return (no log emitted)"
+                exit 1
+              fi
+
+              echo "PASS: Zero-value transfer correctly emits no Transfer log"
+
+  # Final summary
+  - name: run_shell
+    title: "Print EIP-7708 test summary"
+    timeout: 1m
+    config:
+      shell: bash
+      envVars:
+        TRANSFER_TX_HASH: tasks.sendTransfer.outputs.transferTxHash
+        RECEIPT_VERIFIED: tasks.verifyReceiptLog.outputs.receiptLogVerified
+        GETLOGS_VERIFIED: tasks.verifyGetLogs.outputs.getLogsVerified
+        BLOCK_NUMBER: tasks.verifyReceiptLog.outputs.transferBlockNumber
+      command: |
+        TRANSFER_TX_HASH=$(echo $TRANSFER_TX_HASH | jq -r)
+        RECEIPT_VERIFIED=$(echo $RECEIPT_VERIFIED | jq -r)
+        GETLOGS_VERIFIED=$(echo $GETLOGS_VERIFIED | jq -r)
+        BLOCK_NUMBER=$(echo $BLOCK_NUMBER | jq -r)
+        echo "============================================================"
+        echo "EIP-7708 ETH Transfer Log Emission Test Summary"
+        echo "============================================================"
+        echo ""
+        echo "EIP-7708 Transfer log specification:"
+        echo "  Emitting address: 0xfffffffffffffffffffffffffffffffffffffffe"
+        echo "  Event:            Transfer(address indexed from, address indexed to, uint256 value)"
+        echo "  Topic[0]:         0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        echo "  Condition:        transfer_amount > 0 (zero-value transfers emit no log)"
+        echo ""
+        echo "Test 1: Nonzero ETH transfer emits Transfer log"
+        echo "  Tx hash:             ${TRANSFER_TX_HASH}"
+        echo "  Included in block:   ${BLOCK_NUMBER}"
+        echo "  eth_getTransactionReceipt.logs: ${RECEIPT_VERIFIED}"
+        echo "  eth_getLogs query:              ${GETLOGS_VERIFIED}"
+        echo "  Status: PASS"
+        echo ""
+        echo "Test 2: Zero-value ETH transfer emits no Transfer log"
+        echo "  Status: PASS"
+        echo "============================================================"
+
+cleanupTasks:
+  - name: run_shell
+    title: "Cleanup foundry temp dir"
+    config:
+      shell: bash
+      envVars:
+        FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+      command: |
+        FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+        if [ ! -z "$FOUNDRY_HOME" ] && [ -d "$FOUNDRY_HOME" ]; then
+          rm -rf "$FOUNDRY_HOME"
+          echo "Cleaned up foundry temp dir ${FOUNDRY_HOME}"
+        fi
