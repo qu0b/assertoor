@@ -13,7 +13,7 @@ They deploy contracts, send transactions, and verify on-chain state against EIP 
 |----------|----|------|--------|-------|
 | `glamsterdam-devnet-6-eels-tests.yaml` | `glamsterdam-devnet-6-eels-tests` | Run EELS execution spec tests | 2780, 7708, 7778, 7843, 7928, 7954, 7976, 7981, 7997, 8024, 8037, 8246, 8282 | Comprehensive EELS spec suite; requires genesis-generator >= 6.1.0 |
 | `glamsterdam-devnet-6-eip7708-transfer-logs.yaml` | `glamsterdam-devnet-6-eip7708-transfer-logs` | ETH transfer log emission | EIP-7708 | Checks `Transfer(address,address,uint256)` logs from `0xfff...ffe` |
-| `glamsterdam-devnet-6-eip7843-slotnum.yaml` | `glamsterdam-devnet-6-eip7843-slotnum` | SLOTNUM opcode (0x49) verification | EIP-7843 | Deploys via EIP-7997 Arachnid factory; checks opcode value >= 64 at epoch 2 |
+| `glamsterdam-devnet-6-eip7843-slotnum.yaml` | `glamsterdam-devnet-6-eip7843-slotnum` | SLOTNUM opcode (0x4b) verification | EIP-7843 | Deploys via EIP-7997 Arachnid factory; checks opcode value >= 64 at epoch 2 |
 | `glamsterdam-devnet-6-eip7954-initcode.yaml` | `glamsterdam-devnet-6-eip7954-initcode` | 128 KiB initcode / 64 KiB code size limit | EIP-7954 | Deploys 30 KiB (> old 24576 Prague limit) and 60 KiB contracts; requires foundry |
 | `glamsterdam-devnet-6-eip7997-factory.yaml` | `glamsterdam-devnet-6-eip7997-factory` | Arachnid CREATE2 factory pre-deploy | EIP-7997 | Verifies factory at `0x4e59b44847b379578588920ca78fbf26c0b4956c`; no foundry needed |
 | `glamsterdam-devnet-6-eip8037-refund-routing.yaml` | `glamsterdam-devnet-6-eip8037-refund-routing` | Source-based gas refund routing | EIP-8037 | Measures sender balance delta to confirm refund credited to tx.origin; requires foundry |
@@ -107,7 +107,7 @@ and `bal-devnet-5-eels-tests` are for previous devnets and should not be run on 
 |-----|-------|-----------------|
 | EIP-2780 | Reduce intrinsic transaction gas | TX_BASE=21000 unchanged; calldata token model (zero=4, nonzero=16 gas/byte) |
 | EIP-7708 | ETH transfer logs | `Transfer(from, to, value)` emitted by `0xfff...ffe` on every ETH move |
-| EIP-7843 | SLOTNUM opcode | New opcode `0x49` pushes current beacon slot number |
+| EIP-7843 | SLOTNUM opcode | New opcode `0x4b` pushes current beacon slot number |
 | EIP-7954 | Increase maximum contract sizes | MAX_CODE_SIZE 24576 → 65536; MAX_INIT_CODE_SIZE 49152 → 131072 |
 | EIP-7997 | Arachnid CREATE2 factory pre-deploy | Factory at `0x4e59b44847b379578588920ca78fbf26c0b4956c` in genesis |
 | EIP-8037 | Source-based gas refund routing | State-clearing refunds credited to tx.origin, not coinbase |
