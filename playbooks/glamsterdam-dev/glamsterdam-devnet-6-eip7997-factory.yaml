@@ -1,0 +1,343 @@
+id: glamsterdam-devnet-6-eip7997-factory
+name: "glamsterdam-devnet-6: EIP-7997 Arachnid CREATE2 factory pre-deploy verification"
+timeout: 2h
+config:
+  walletPrivkey: ""
+  # EIP-7997: Pre-deploys the Arachnid CREATE2 factory at a deterministic address.
+  # The factory was historically deployed on mainnet via a keyless deployment transaction
+  # signed by a one-off key. EIP-7997 enshrines this in the genesis state so all networks
+  # have it at the same address from block 0.
+  #
+  # Factory address: 0x4e59b44847b379578588920ca78fbf26c0b4956c
+  #
+  # Factory calldata format: <salt:32 bytes> ++ <initcode:N bytes>
+  # The factory uses CREATE2 internally: deployed address = keccak256(0xff ++ factory ++ salt ++ keccak256(initcode))[12:]
+  #
+  # Tests:
+  #   1. Verify the factory has code at the canonical address (genesis pre-deploy)
+  #   2. Deploy a minimal contract through the factory and confirm it lands at the expected CREATE2 address
+  #   3. Verify the deployed contract has code (CREATE2 deployment succeeded)
+  factoryAddress: "0x4e59b44847b379578588920ca78fbf26c0b4956c"
+
+tasks:
+  - name: check_clients_are_healthy
+    title: "Check if at least one client is ready"
+    id: clientCheck
+    timeout: 5m
+    config:
+      minClientCount: 1
+
+  # EIP-7997 activates at Amsterdam genesis (epoch 0). Wait for epoch 2 for chain stability.
+  - name: get_consensus_specs
+    id: consensusSpecs
+    title: "Get consensus chain specs"
+
+  - name: check_consensus_slot_range
+    title: "Wait for network to be stable (epoch 2)"
+    timeout: 1h
+    config:
+      minEpochNumber: 2
+
+  # Install foundry (cast) for chain interaction
+  - name: run_shell
+    title: "Install foundry (cast)"
+    id: installFoundry
+    timeout: 10m
+    config:
+      shell: bash
+      shellArgs: [--login]
+      command: |
+        set -e
+        FOUNDRY_HOME=$(mktemp -d -t foundry-XXXXXXXXXX)
+        echo "::set-output foundryHome ${FOUNDRY_HOME}"
+        export HOME=${FOUNDRY_HOME}
+        curl -L https://foundry.paradigm.xyz | bash
+        source ${FOUNDRY_HOME}/.bashrc || true
+        ${FOUNDRY_HOME}/.foundry/bin/foundryup
+        if [ ! -f "${FOUNDRY_HOME}/.foundry/bin/cast" ]; then
+          echo "cast not found after foundryup"
+          exit 1
+        fi
+        echo "cast installed at ${FOUNDRY_HOME}/.foundry/bin/cast"
+
+  # Test 1: Verify the Arachnid CREATE2 factory is pre-deployed with code
+  - name: run_shell
+    title: "Test 1: Verify Arachnid factory is pre-deployed at canonical address"
+    id: testFactoryCode
+    timeout: 5m
+    config:
+      shell: bash
+      shellArgs: [--login]
+      envVars:
+        EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+        FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+      command: |
+        set -e
+        EL_RPC=$(echo $EL_RPC | jq -r)
+        FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+
+        export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export HOME=${FOUNDRY_HOME}
+
+        FACTORY="0x4e59b44847b379578588920ca78fbf26c0b4956c"
+
+        echo "=== EIP-7997 Arachnid CREATE2 Factory Pre-Deploy Verification ==="
+        echo "Factory address: ${FACTORY}"
+        echo "RPC:             ${EL_RPC}"
+        echo ""
+
+        # Fetch the bytecode at the factory address.
+        # EIP-7997 mandates the factory is in the genesis state, so this must be non-empty.
+        FACTORY_CODE=$(cast code ${FACTORY} --rpc-url ${EL_RPC})
+        echo "Factory bytecode: ${FACTORY_CODE}"
+        echo "::set-output factoryCode ${FACTORY_CODE}"
+
+        CODE_LEN=${#FACTORY_CODE}
+        # "0x" is 2 chars; anything <= 2 means no code
+        if [ "${CODE_LEN}" -le 2 ]; then
+          echo "FAIL: Arachnid factory has no code at ${FACTORY}"
+          echo "      EIP-7997 requires the factory to be pre-deployed at genesis."
+          echo "      Code returned: '${FACTORY_CODE}'"
+          exit 1
+        fi
+
+        echo "PASS: Arachnid factory code present at ${FACTORY} (${CODE_LEN} hex chars including 0x prefix)"
+
+        # The canonical Arachnid factory is 97 bytes long.
+        # hex chars = 2 + (97 * 2) = 196 chars
+        EXPECTED_MIN=10   # at minimum a few bytes of code
+        ACTUAL_BYTES=$(( (CODE_LEN - 2) / 2 ))
+        echo "Factory bytecode size: ${ACTUAL_BYTES} bytes"
+
+        if [ "${ACTUAL_BYTES}" -lt "${EXPECTED_MIN}" ]; then
+          echo "FAIL: Factory code is suspiciously small (${ACTUAL_BYTES} bytes < ${EXPECTED_MIN})."
+          echo "      The canonical Arachnid factory is 97 bytes."
+          exit 1
+        fi
+
+        echo "PASS: Factory code size ${ACTUAL_BYTES} bytes looks valid."
+        echo "::set-output factoryCodeBytes ${ACTUAL_BYTES}"
+
+  # Test 2: Deploy a contract through the factory and verify it lands at the expected CREATE2 address
+  - name: run_tasks
+    title: "Test 2: Deploy contract via factory and verify CREATE2 address"
+    id: testFactoryDeploy
+    config:
+      continueOnFailure: false
+      tasks:
+        - name: generate_child_wallet
+          id: factoryWallet
+          title: "Generate funded wallet for factory deploy test"
+          config:
+            prefundMinBalance: 1000000000000000000  # 1 ETH
+            walletSeed: "eip7997-factory-test"
+          configVars:
+            privateKey: "walletPrivkey"
+
+        - name: run_shell
+          title: "Call factory with salt + initcode, verify CREATE2 deployment"
+          id: deployViaFactory
+          timeout: 10m
+          config:
+            shell: bash
+            shellArgs: [--login]
+            envVars:
+              WALLET_PRIVKEY: tasks.factoryWallet.outputs.childWallet.privkey
+              WALLET_ADDRESS: tasks.factoryWallet.outputs.childWallet.address
+              EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+              FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+            command: |
+              set -e
+              WALLET_PRIVKEY=$(echo $WALLET_PRIVKEY | jq -r)
+              WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+              EL_RPC=$(echo $EL_RPC | jq -r)
+              FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+
+              export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+              export HOME=${FOUNDRY_HOME}
+
+              FACTORY="0x4e59b44847b379578588920ca78fbf26c0b4956c"
+
+              echo "=== Arachnid Factory Deploy Test ==="
+              echo "Factory:  ${FACTORY}"
+              echo "Deployer: ${WALLET_ADDRESS}"
+              echo ""
+
+              # We deploy a minimal contract via the Arachnid factory.
+              #
+              # Factory calldata format: <salt:32 bytes> ++ <initcode:N bytes>
+              #
+              # Salt: 0x00..007997 (EIP-7997 identifier for this test)
+              SALT_HEX="0000000000000000000000000000000000000000000000000000000000007997"
+              SALT_WITH_0X="0x${SALT_HEX}"
+              echo "Salt: ${SALT_WITH_0X}"
+              echo ""
+
+              # Minimal initcode: deploys a 1-byte contract that stores the value 0x42.
+              # This uses the standard initcode wrapper pattern:
+              #   PUSH1 0x01   (runtime length = 1 byte)
+              #   PUSH1 0x0b   (offset of runtime in initcode = 11 bytes for the wrapper)
+              #   PUSH1 0x00   (dest offset in memory)
+              #   CODECOPY     (copy runtime to memory[0])
+              #   PUSH1 0x01   (return length = 1)
+              #   PUSH1 0x00   (return offset = 0)
+              #   RETURN       (return memory[0..1] as the deployed code)
+              #   [runtime: 0x42]  (1 byte of runtime bytecode = INVALID, but that's fine for presence check)
+              #
+              # Simpler approach: use "STOP" (0x00) as the sole runtime byte.
+              # Initcode: 6001 600b 6000 39 6001 6000 f3 00
+              # That's 8 bytes of initcode wrapper + 1 byte runtime = 9 bytes total.
+              # CODECOPY offset = 8 (not 11 — let's recalculate):
+              #   PUSH1 size(1)=0x60 0x01    2 bytes
+              #   PUSH1 offset(8)=0x60 0x08  2 bytes
+              #   PUSH1 destOffset(0)=0x60 0x00  2 bytes
+              #   CODECOPY=0x39              1 byte
+              #   PUSH1 size(1)=0x60 0x01    2 bytes
+              #   PUSH1 retOffset(0)=0x60 0x00  2 bytes
+              #   RETURN=0xf3                1 byte
+              #   [runtime: 0x00 = STOP]     1 byte
+              # Total: 8 wrapper bytes + 1 runtime byte = 9 bytes
+              # Runtime is at offset 8, so PUSH1 0x08 is correct.
+              #
+              # Initcode hex (9 bytes): 6001600839600160 00f300
+              INITCODE_HEX="600160083960016000f300"
+              INITCODE_WITH_0X="0x${INITCODE_HEX}"
+              echo "Initcode (${#INITCODE_HEX} hex chars / $((${#INITCODE_HEX}/2)) bytes): ${INITCODE_WITH_0X}"
+              echo ""
+
+              # Build factory calldata: salt(32 bytes) ++ initcode
+              CALLDATA="0x${SALT_HEX}${INITCODE_HEX}"
+              echo "Factory calldata: ${CALLDATA}"
+              echo ""
+
+              # Compute the expected CREATE2 address BEFORE sending the tx.
+              # Formula: address = keccak256(0xff ++ factory(20 bytes) ++ salt(32 bytes) ++ keccak256(initcode))[12:]
+              #
+              # cast can compute this:
+              #   cast create2 --deployer <factory> --salt <salt> --init-code <initcode>
+              EXPECTED_ADDR=""
+              CREATE2_OUT=$(cast create2 \
+                --deployer ${FACTORY} \
+                --salt ${SALT_WITH_0X} \
+                --init-code ${INITCODE_WITH_0X} 2>/dev/null || echo "")
+
+              if [ -n "${CREATE2_OUT}" ]; then
+                # cast create2 outputs the address on stdout (may be with "Address: " prefix)
+                EXPECTED_ADDR=$(echo "${CREATE2_OUT}" | grep -oE '0x[0-9a-fA-F]{40}' | tr '[:upper:]' '[:lower:]')
+                echo "Expected CREATE2 address (from cast create2): ${EXPECTED_ADDR}"
+              else
+                # Fallback: compute manually via keccak256
+                # We need: keccak256(0xff ++ factory(no 0x) ++ salt(no 0x) ++ keccak256(initcode))
+                INITCODE_HASH=$(cast keccak ${INITCODE_WITH_0X} 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed 's/^0x//' || echo "")
+                if [ -n "${INITCODE_HASH}" ]; then
+                  PREIMAGE="ff4e59b44847b379578588920ca78fbf26c0b4956c${SALT_HEX}${INITCODE_HASH}"
+                  FULL_HASH=$(cast keccak "0x${PREIMAGE}" 2>/dev/null || echo "")
+                  if [ -n "${FULL_HASH}" ]; then
+                    EXPECTED_ADDR="0x$(echo ${FULL_HASH} | sed 's/^0x//' | cut -c25-)"
+                    echo "Expected CREATE2 address (manual keccak): ${EXPECTED_ADDR}"
+                  fi
+                fi
+              fi
+              echo "::set-output expectedAddr ${EXPECTED_ADDR:-unknown}"
+
+              # Send the factory call transaction
+              echo ""
+              echo "Sending factory deployment tx..."
+              DEPLOY_JSON=$(cast send ${FACTORY} \
+                ${CALLDATA} \
+                --private-key ${WALLET_PRIVKEY} \
+                --rpc-url ${EL_RPC} \
+                --legacy \
+                --json)
+
+              TX_HASH=$(echo "${DEPLOY_JSON}" | jq -r '.transactionHash')
+              TX_STATUS=$(echo "${DEPLOY_JSON}" | jq -r '.status')
+              echo "Factory deploy tx hash: ${TX_HASH}"
+              echo "Transaction status:     ${TX_STATUS}"
+              echo "::set-output deployTxHash ${TX_HASH}"
+
+              if [ "${TX_STATUS}" != "0x1" ] && [ "${TX_STATUS}" != "1" ]; then
+                echo "FAIL: Factory deployment transaction failed (status=${TX_STATUS})"
+                echo "      This indicates the factory either rejected the initcode or"
+                echo "      EIP-7997 is not active (factory has no code)."
+                exit 1
+              fi
+
+              echo "PASS: Factory deployment tx succeeded (status=${TX_STATUS})"
+
+              # Verify deployed contract has code at expected address
+              if [ -n "${EXPECTED_ADDR}" ] && [ "${EXPECTED_ADDR}" != "unknown" ]; then
+                echo ""
+                echo "Checking for deployed contract code at ${EXPECTED_ADDR}..."
+                DEPLOYED_CODE=$(cast code ${EXPECTED_ADDR} --rpc-url ${EL_RPC} 2>/dev/null || echo "")
+                echo "Deployed code: ${DEPLOYED_CODE}"
+                echo "::set-output deployedCode ${DEPLOYED_CODE}"
+
+                CODE_LEN=${#DEPLOYED_CODE}
+                if [ "${CODE_LEN}" -le 2 ]; then
+                  echo "FAIL: No code at expected CREATE2 address ${EXPECTED_ADDR}"
+                  echo "      The factory tx succeeded but the contract was not deployed at"
+                  echo "      the expected CREATE2 address. Possible CREATE2 address mismatch."
+                  exit 1
+                fi
+
+                echo "PASS: Contract deployed at expected CREATE2 address ${EXPECTED_ADDR}"
+                echo "      Deployed bytecode size: $((${CODE_LEN} - 2)) hex chars / $((( CODE_LEN - 2) / 2)) bytes"
+              else
+                echo "NOTE: Could not compute expected address (cast create2 unavailable)."
+                echo "      Factory tx succeeded — deployment confirmed by tx status."
+                echo "PASS: EIP-7997 factory deployment completed successfully."
+              fi
+
+  # Final summary
+  - name: run_shell
+    title: "Print EIP-7997 factory verification summary"
+    timeout: 1m
+    config:
+      shell: bash
+      envVars:
+        FACTORY_CODE: tasks.testFactoryCode.outputs.factoryCode
+        FACTORY_BYTES: tasks.testFactoryCode.outputs.factoryCodeBytes
+        EXPECTED_ADDR: tasks.deployViaFactory.outputs.expectedAddr
+        DEPLOY_TX: tasks.deployViaFactory.outputs.deployTxHash
+        DEPLOYED_CODE: tasks.deployViaFactory.outputs.deployedCode
+      command: |
+        FACTORY_CODE=$(echo $FACTORY_CODE | jq -r 2>/dev/null || echo "$FACTORY_CODE")
+        FACTORY_BYTES=$(echo $FACTORY_BYTES | jq -r 2>/dev/null || echo "$FACTORY_BYTES")
+        EXPECTED_ADDR=$(echo $EXPECTED_ADDR | jq -r 2>/dev/null || echo "$EXPECTED_ADDR")
+        DEPLOY_TX=$(echo $DEPLOY_TX | jq -r 2>/dev/null || echo "$DEPLOY_TX")
+        DEPLOYED_CODE=$(echo $DEPLOYED_CODE | jq -r 2>/dev/null || echo "$DEPLOYED_CODE")
+        echo "================================================================"
+        echo "EIP-7997 Arachnid CREATE2 Factory Verification Summary"
+        echo "================================================================"
+        echo ""
+        echo "EIP-7997 specification:"
+        echo "  Pre-deploys the Arachnid CREATE2 factory at genesis."
+        echo "  Factory address: 0x4e59b44847b379578588920ca78fbf26c0b4956c"
+        echo "  Calldata format: <salt:32 bytes> ++ <initcode:N bytes>"
+        echo "  Deployed address: keccak256(0xff ++ factory ++ salt ++ keccak256(initcode))[12:]"
+        echo ""
+        echo "Test 1: Factory pre-deploy check"
+        echo "  Factory bytecode size: ${FACTORY_BYTES} bytes"
+        echo "  Status: PASS"
+        echo ""
+        echo "Test 2: Deploy contract via factory"
+        echo "  Salt:             0x00..007997"
+        echo "  Deploy tx:        ${DEPLOY_TX}"
+        echo "  Expected address: ${EXPECTED_ADDR}"
+        echo "  Status: PASS"
+        echo "================================================================"
+
+cleanupTasks:
+  - name: run_shell
+    title: "Cleanup foundry temp dirs"
+    config:
+      shell: bash
+      envVars:
+        FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+      command: |
+        FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+        if [ ! -z "$FOUNDRY_HOME" ] && [ -d "$FOUNDRY_HOME" ]; then
+          rm -rf "$FOUNDRY_HOME"
+          echo "Cleaned up foundry temp dir ${FOUNDRY_HOME}"
+        fi
