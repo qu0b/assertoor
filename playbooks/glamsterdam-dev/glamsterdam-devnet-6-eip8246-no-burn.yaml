@@ -181,7 +181,13 @@ tasks:
                 --json \
                 ${WORK_DIR}/SelfDestructTest.sol:SelfDestructTest)
 
-              CONTRACT_ADDR=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo')
+              CONTRACT_ADDR=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              if [ -z "${CONTRACT_ADDR}" ] || [ "${CONTRACT_ADDR}" = "null" ]; then
+                _FROM=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.from // empty')
+                _NONHEX=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.nonce // "0x0"')
+                _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+                CONTRACT_ADDR=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
+              fi
               echo "Contract deployed at: ${CONTRACT_ADDR}"
               echo "::set-output contractAddr ${CONTRACT_ADDR}"
 
@@ -333,8 +339,14 @@ tasks:
                 --json \
                 ${WORK_DIR}/SelfDestructInConstructor.sol:SelfDestructInConstructor)
 
-              CONTRACT_ADDR=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo')
-              DEPLOY_TX=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash')
+              CONTRACT_ADDR=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              if [ -z "${CONTRACT_ADDR}" ] || [ "${CONTRACT_ADDR}" = "null" ]; then
+                _FROM=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.from // empty')
+                _NONHEX=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.nonce // "0x0"')
+                _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+                CONTRACT_ADDR=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
+              fi
+              DEPLOY_TX=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
               echo "Contract deployed at: ${CONTRACT_ADDR}"
               echo "Deployment tx hash:   ${DEPLOY_TX}"
               echo "::set-output contractAddr2 ${CONTRACT_ADDR}"

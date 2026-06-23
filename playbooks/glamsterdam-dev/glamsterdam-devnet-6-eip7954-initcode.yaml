@@ -146,6 +146,12 @@ tasks:
           ${WORK_DIR}/LargeContract.sol:LargeContract 2>&1)
 
         CONTRACT=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+        if [ -z "${CONTRACT}" ] || [ "${CONTRACT}" = "null" ]; then
+            _FROM=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.from // empty')
+            _NONHEX=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.nonce // "0x0"')
+            _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+            CONTRACT=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
+        fi
         TX_HASH=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
         echo "::set-output contractAddr30k ${CONTRACT}"
         echo "::set-output deployTxHash30k ${TX_HASH}"
@@ -240,6 +246,12 @@ tasks:
           ${WORK_DIR}/VeryLargeContract.sol:VeryLargeContract 2>&1) || true
 
         VL_CONTRACT=$(echo "${VL_OUT}" | jq -r '.deployedTo // empty')
+        if [ -z "${VL_CONTRACT}" ] || [ "${VL_CONTRACT}" = "null" ]; then
+            _FROM=$(echo "${VL_OUT}" | jq -r '.transaction.from // empty')
+            _NONHEX=$(echo "${VL_OUT}" | jq -r '.transaction.nonce // "0x0"')
+            _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+            VL_CONTRACT=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
+        fi
         VL_TX=$(echo "${VL_OUT}" | jq -r '.transactionHash // empty')
         echo "::set-output contractAddr60k ${VL_CONTRACT}"
         echo "::set-output deployTxHash60k ${VL_TX}"

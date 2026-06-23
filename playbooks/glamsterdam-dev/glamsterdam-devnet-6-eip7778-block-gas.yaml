@@ -134,7 +134,13 @@ tasks:
           --private-key ${WALLET_PRIVKEY} \
           --legacy --broadcast --json \
           ${WORK_DIR}/StorageClearer.sol:StorageClearer)
-        CONTRACT=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo')
+        CONTRACT=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+        if [ -z "${CONTRACT}" ] || [ "${CONTRACT}" = "null" ]; then
+            _FROM=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.from // empty')
+            _NONHEX=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.nonce // "0x0"')
+            _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+            CONTRACT=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
+        fi
         echo "::set-output contractAddr ${CONTRACT}"
         echo "Contract: ${CONTRACT}"
 

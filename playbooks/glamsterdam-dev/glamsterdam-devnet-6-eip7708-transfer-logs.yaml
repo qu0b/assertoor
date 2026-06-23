@@ -478,6 +478,12 @@ tasks:
                 ${WORK_DIR}/Forwarder.sol:Forwarder 2>&1)
 
               FORWARDER=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              if [ -z "${FORWARDER}" ] || [ "${FORWARDER}" = "null" ]; then
+                _FROM=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.from // empty')
+                _NONHEX=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.nonce // "0x0"')
+                _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+                FORWARDER=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
+              fi
               DEPLOY_TX=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
 
               if [ -z "${FORWARDER}" ]; then
@@ -689,6 +695,12 @@ tasks:
                 ${WORK_DIR4}/ValueReceiver.sol:ValueReceiver 2>&1)
 
               RECEIVER=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              if [ -z "${RECEIVER}" ] || [ "${RECEIVER}" = "null" ]; then
+                _FROM=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.from // empty')
+                _NONHEX=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.nonce // "0x0"')
+                _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+                RECEIVER=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
+              fi
               DEPLOY_TX=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
 
               if [ -z "${RECEIVER}" ]; then
@@ -857,6 +869,12 @@ tasks:
                 ${WORK_DIR5}/SelfDestructable.sol:SelfDestructable 2>&1)
 
               CONTRACT=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              if [ -z "${CONTRACT}" ] || [ "${CONTRACT}" = "null" ]; then
+                _FROM=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.from // empty')
+                _NONHEX=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.nonce // "0x0"')
+                _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+                CONTRACT=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
+              fi
               DEPLOY_TX=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
 
               if [ -z "${CONTRACT}" ]; then
@@ -1044,6 +1062,12 @@ tasks:
                 ${WORK_DIR5}/SelfDestructable.sol:SelfDestructable 2>&1)
 
               CONTRACT6=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              if [ -z "${CONTRACT6}" ] || [ "${CONTRACT6}" = "null" ]; then
+                _FROM=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.from // empty')
+                _NONHEX=$(echo "${DEPLOY_OUT}" | jq -r '.transaction.nonce // "0x0"')
+                _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+                CONTRACT6=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
+              fi
               DEPLOY_TX6=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
 
               if [ -z "${CONTRACT6}" ]; then
