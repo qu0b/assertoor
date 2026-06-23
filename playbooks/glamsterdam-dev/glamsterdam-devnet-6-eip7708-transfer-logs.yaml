@@ -767,6 +767,339 @@ SOLEOF
               echo "      EIP-7708 correctly instruments CREATE value transfers"
               echo "::set-output createValueVerified true"
 
+  # Test 5: SELFDESTRUCT with non-zero beneficiary emits Transfer log (EIP-7708 × EIP-8246)
+  # EIP-6780 (Cancun): SELFDESTRUCT called outside of the creation transaction no longer
+  # destroys the contract — it only moves ETH to the beneficiary (like a CALL-with-value).
+  # EIP-7708: All ETH movements must emit Transfer logs.
+  # So: deploy → call destroy(beneficiary) in a later tx → Transfer(contract, beneficiary, 1 ETH) logged.
+  - name: run_tasks
+    title: "Test 5: SELFDESTRUCT to beneficiary emits Transfer log (EIP-7708 × EIP-8246)"
+    id: testSelfDestructTransfer
+    config:
+      continueOnFailure: false
+      tasks:
+        - name: generate_child_wallet
+          id: selfDestructWallet
+          title: "Generate funded wallet for SELFDESTRUCT transfer test (5 ETH)"
+          config:
+            prefundMinBalance: 5000000000000000000  # 5 ETH
+            walletSeed: "eip7708-selfdestruct-transfer-test"
+          configVars:
+            privateKey: "walletPrivkey"
+
+        - name: run_shell
+          title: "Deploy SelfDestructable, fund it, then destroy to beneficiary — verify Transfer log"
+          id: selfDestructToAddr
+          timeout: 15m
+          config:
+            shell: bash
+            shellArgs: [--login]
+            envVars:
+              WALLET_PRIVKEY: tasks.selfDestructWallet.outputs.childWallet.privkey
+              WALLET_ADDRESS: tasks.selfDestructWallet.outputs.childWallet.address
+              TRANSFER_LOG_ADDR: transferLogAddress
+              TRANSFER_TOPIC: transferTopic
+              EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+              FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+            command: |
+              set -e
+              WALLET_PRIVKEY=$(echo $WALLET_PRIVKEY | jq -r)
+              WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+              TRANSFER_LOG_ADDR=$(echo $TRANSFER_LOG_ADDR | jq -r)
+              TRANSFER_TOPIC=$(echo $TRANSFER_TOPIC | jq -r)
+              EL_RPC=$(echo $EL_RPC | jq -r)
+              FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+
+              export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+              export HOME=${FOUNDRY_HOME}
+
+              echo "=== EIP-7708 Test 5: SELFDESTRUCT to beneficiary emits Transfer log ==="
+              echo "Wallet: ${WALLET_ADDRESS}"
+              echo "RPC:    ${EL_RPC}"
+              echo ""
+              echo "Test goal: verify that SELFDESTRUCT(beneficiary) emits Transfer(contract, beneficiary, value)"
+              echo "  per EIP-7708. Post-EIP-6780, SELFDESTRUCT called outside of creation tx only moves"
+              echo "  ETH (contract is NOT destroyed). EIP-7708 must instrument this ETH movement."
+              echo ""
+
+              WORK_DIR5=$(mktemp -d -t eip7708-selfdestruct-XXXXXXXXXX)
+              echo "::set-output workDir5 ${WORK_DIR5}"
+
+              cat > ${WORK_DIR5}/SelfDestructable.sol << 'SOLEOF'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+// EIP-7708 SELFDESTRUCT test: calling destroy(beneficiary) in a separate tx from creation
+// moves contract ETH to beneficiary without destroying the contract (EIP-6780 semantics).
+// EIP-7708 must emit Transfer(contract, beneficiary, balance) from 0xfff...ffe.
+// EIP-8246 (no-burn): destroy(address(0)) drops ETH without emitting Transfer.
+contract SelfDestructable {
+    constructor() payable {}
+    function destroy(address payable beneficiary) external {
+        selfdestruct(beneficiary);
+    }
+}
+SOLEOF
+
+              echo "Deploying SelfDestructable with 1 ETH..."
+              DEPLOY_OUT=$(forge create \
+                --rpc-url ${EL_RPC} \
+                --private-key ${WALLET_PRIVKEY} \
+                --legacy \
+                --value 1ether \
+                --json \
+                ${WORK_DIR5}/SelfDestructable.sol:SelfDestructable 2>&1)
+
+              CONTRACT=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              DEPLOY_TX=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
+
+              if [ -z "${CONTRACT}" ]; then
+                echo "FAIL: SelfDestructable deployment failed"
+                echo "forge output: ${DEPLOY_OUT}"
+                exit 1
+              fi
+              echo "SelfDestructable deployed at: ${CONTRACT} (tx: ${DEPLOY_TX})"
+              echo "::set-output sdContractAddr ${CONTRACT}"
+
+              # Use a fresh beneficiary address so balance delta is unambiguous
+              BENEFICIARY="0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead"
+              BALANCE_BEFORE=$(cast balance ${BENEFICIARY} --rpc-url ${EL_RPC} 2>/dev/null || echo "0")
+              echo "Beneficiary: ${BENEFICIARY}"
+              echo "Beneficiary balance before: ${BALANCE_BEFORE} wei"
+              echo ""
+              echo "Calling destroy(beneficiary) — this is a SEPARATE tx from creation (EIP-6780 applies)"
+              echo "  Expected: ETH moves from ${CONTRACT} to ${BENEFICIARY}"
+              echo "  Expected: Transfer(${CONTRACT}, ${BENEFICIARY}, 1e18) logged from 0xff..fe"
+              echo ""
+
+              # Call destroy in a new tx — EIP-6780: contract NOT destroyed, ETH moved
+              DESTROY_JSON=$(cast send ${CONTRACT} \
+                "destroy(address)" ${BENEFICIARY} \
+                --private-key ${WALLET_PRIVKEY} \
+                --rpc-url ${EL_RPC} \
+                --json)
+
+              DESTROY_TX=$(echo "${DESTROY_JSON}" | jq -r '.transactionHash')
+              DESTROY_STATUS=$(echo "${DESTROY_JSON}" | jq -r '.status')
+              echo "destroy tx: ${DESTROY_TX}"
+              echo "status:     ${DESTROY_STATUS}"
+              echo "::set-output sdDestroyTx ${DESTROY_TX}"
+
+              if [ "${DESTROY_STATUS}" != "0x1" ] && [ "${DESTROY_STATUS}" != "1" ]; then
+                echo "FAIL: destroy() call failed (status=${DESTROY_STATUS})"
+                exit 1
+              fi
+
+              # Verify beneficiary received 1 ETH
+              BALANCE_AFTER=$(cast balance ${BENEFICIARY} --rpc-url ${EL_RPC} 2>/dev/null || echo "0")
+              echo "Beneficiary balance after: ${BALANCE_AFTER} wei"
+              EXPECTED_WEI="1000000000000000000"
+              DELTA=$((${BALANCE_AFTER} - ${BALANCE_BEFORE}))
+              if [ "${DELTA}" != "${EXPECTED_WEI}" ]; then
+                echo "FAIL: beneficiary balance delta=${DELTA}, expected 1e18 (1 ETH)"
+                exit 1
+              fi
+              echo "Beneficiary received exactly 1 ETH ✓"
+
+              # Fetch the destroy tx receipt and check for Transfer log
+              RECEIPT=$(curl -s -X POST \
+                -H "Content-Type: application/json" \
+                --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\",\"params\":[\"${DESTROY_TX}\"],\"id\":1}" \
+                ${EL_RPC})
+
+              TRANSFER_LOGS=$(echo "${RECEIPT}" | jq \
+                --arg topic "${TRANSFER_TOPIC}" \
+                '[.result.logs[] | select(.topics[0] == $topic)]')
+              TRANSFER_LOG_COUNT=$(echo "${TRANSFER_LOGS}" | jq 'length')
+              echo ""
+              echo "Transfer logs in destroy receipt: ${TRANSFER_LOG_COUNT}"
+
+              if [ "${TRANSFER_LOG_COUNT}" = "0" ] || [ "${TRANSFER_LOG_COUNT}" = "null" ]; then
+                echo "FAIL: SELFDESTRUCT to beneficiary emitted no Transfer log."
+                echo "      EIP-7708 must instrument all ETH movements including SELFDESTRUCT."
+                exit 1
+              fi
+
+              LOG_ADDR=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].address' | tr '[:upper:]' '[:lower:]')
+              LOG_FROM=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].topics[1]' | tr '[:upper:]' '[:lower:]')
+              LOG_TO=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].topics[2]' | tr '[:upper:]' '[:lower:]')
+              LOG_DATA=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].data' | tr '[:upper:]' '[:lower:]')
+
+              TRANSFER_LOG_ADDR_LC=$(echo "${TRANSFER_LOG_ADDR}" | tr '[:upper:]' '[:lower:]')
+              CONTRACT_LC=$(echo "${CONTRACT}" | tr '[:upper:]' '[:lower:]' | sed 's/0x//')
+              BENEFICIARY_LC=$(echo "${BENEFICIARY}" | tr '[:upper:]' '[:lower:]' | sed 's/0x//')
+
+              echo "Transfer log[0]:"
+              echo "  address (must be 0xff..fe): ${LOG_ADDR}"
+              echo "  from (must be contract):    ${LOG_FROM}"
+              echo "  to   (must be beneficiary): ${LOG_TO}"
+              echo "  data (must be 1 ETH):       ${LOG_DATA}"
+
+              if [ "${LOG_ADDR}" != "${TRANSFER_LOG_ADDR_LC}" ]; then
+                echo "FAIL: Transfer log emitting address mismatch: expected ${TRANSFER_LOG_ADDR_LC}, got ${LOG_ADDR}"
+                exit 1
+              fi
+
+              EXPECTED_FROM="0x000000000000000000000000${CONTRACT_LC}"
+              EXPECTED_TO="0x000000000000000000000000${BENEFICIARY_LC}"
+              if [ "${LOG_FROM}" != "${EXPECTED_FROM}" ]; then
+                echo "FAIL: Transfer log 'from' mismatch: expected ${EXPECTED_FROM} (contract), got ${LOG_FROM}"
+                exit 1
+              fi
+              if [ "${LOG_TO}" != "${EXPECTED_TO}" ]; then
+                echo "FAIL: Transfer log 'to' mismatch: expected ${EXPECTED_TO} (beneficiary), got ${LOG_TO}"
+                exit 1
+              fi
+
+              EXPECTED_DATA="0x0000000000000000000000000000000000000000000000000de0b6b3a7640000"
+              if [ "${LOG_DATA}" != "${EXPECTED_DATA}" ]; then
+                echo "FAIL: Transfer log value mismatch: expected ${EXPECTED_DATA} (1 ETH), got ${LOG_DATA}"
+                exit 1
+              fi
+
+              echo ""
+              echo "PASS: SELFDESTRUCT to beneficiary emitted Transfer(contract → beneficiary, 1 ETH)"
+              echo "      EIP-7708 correctly instruments SELFDESTRUCT ETH movements"
+              echo "::set-output sdTransferVerified true"
+
+  # Test 6: SELFDESTRUCT to address(0) emits NO Transfer log (EIP-8246 no-burn × EIP-7708)
+  # EIP-8246 (Amsterdam): SELFDESTRUCT(address(0)) silently drops the ETH —
+  # address(0)'s balance does NOT increase (the ETH is gone, not burned).
+  # Since no actual ETH transfer occurs, EIP-7708 must NOT emit a Transfer log.
+  - name: run_tasks
+    title: "Test 6: SELFDESTRUCT to address(0) emits NO Transfer log (EIP-8246 no-burn)"
+    id: testSelfDestructNoBurn
+    config:
+      continueOnFailure: false
+      tasks:
+        - name: generate_child_wallet
+          id: selfDestructNoBurnWallet
+          title: "Generate funded wallet for SELFDESTRUCT no-burn test (5 ETH)"
+          config:
+            prefundMinBalance: 5000000000000000000  # 5 ETH
+            walletSeed: "eip7708-selfdestruct-noburn-test"
+          configVars:
+            privateKey: "walletPrivkey"
+
+        - name: run_shell
+          title: "Deploy SelfDestructable, destroy to address(0) — verify NO Transfer log emitted"
+          id: selfDestructToZero
+          timeout: 15m
+          config:
+            shell: bash
+            shellArgs: [--login]
+            envVars:
+              WALLET_PRIVKEY: tasks.selfDestructNoBurnWallet.outputs.childWallet.privkey
+              WALLET_ADDRESS: tasks.selfDestructNoBurnWallet.outputs.childWallet.address
+              TRANSFER_LOG_ADDR: transferLogAddress
+              TRANSFER_TOPIC: transferTopic
+              EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+              FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+              WORK_DIR5: tasks.selfDestructToAddr.outputs.workDir5
+            command: |
+              set -e
+              WALLET_PRIVKEY=$(echo $WALLET_PRIVKEY | jq -r)
+              WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+              TRANSFER_LOG_ADDR=$(echo $TRANSFER_LOG_ADDR | jq -r)
+              TRANSFER_TOPIC=$(echo $TRANSFER_TOPIC | jq -r)
+              EL_RPC=$(echo $EL_RPC | jq -r)
+              FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+              WORK_DIR5=$(echo $WORK_DIR5 | jq -r)
+
+              export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+              export HOME=${FOUNDRY_HOME}
+
+              echo "=== EIP-7708 Test 6: SELFDESTRUCT to address(0) emits NO Transfer log ==="
+              echo "Wallet: ${WALLET_ADDRESS}"
+              echo "RPC:    ${EL_RPC}"
+              echo ""
+              echo "Test goal: EIP-8246 drops ETH when SELFDESTRUCT(address(0)) is called."
+              echo "  Since no actual ETH transfer occurs (ETH disappears), EIP-7708 must"
+              echo "  NOT emit a Transfer log — there is no recipient."
+              echo ""
+
+              ADDR_ZERO="0x0000000000000000000000000000000000000000"
+              BALANCE_ZERO_BEFORE=$(cast balance ${ADDR_ZERO} --rpc-url ${EL_RPC} 2>/dev/null || echo "0")
+              echo "address(0) balance before: ${BALANCE_ZERO_BEFORE} wei"
+
+              # Deploy a fresh SelfDestructable with 0.5 ETH using the .sol from Test 5
+              echo "Deploying SelfDestructable with 0.5 ETH..."
+              DEPLOY_OUT=$(forge create \
+                --rpc-url ${EL_RPC} \
+                --private-key ${WALLET_PRIVKEY} \
+                --legacy \
+                --value 0.5ether \
+                --json \
+                ${WORK_DIR5}/SelfDestructable.sol:SelfDestructable 2>&1)
+
+              CONTRACT6=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              DEPLOY_TX6=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
+
+              if [ -z "${CONTRACT6}" ]; then
+                echo "FAIL: SelfDestructable (Test 6) deployment failed"
+                echo "forge output: ${DEPLOY_OUT}"
+                exit 1
+              fi
+              echo "SelfDestructable (Test 6) deployed at: ${CONTRACT6} (tx: ${DEPLOY_TX6})"
+              echo "::set-output sdNoBurnContractAddr ${CONTRACT6}"
+
+              echo ""
+              echo "Calling destroy(address(0)) — ETH should be dropped per EIP-8246, no Transfer log."
+              DESTROY_JSON=$(cast send ${CONTRACT6} \
+                "destroy(address)" ${ADDR_ZERO} \
+                --private-key ${WALLET_PRIVKEY} \
+                --rpc-url ${EL_RPC} \
+                --json)
+
+              DESTROY_TX=$(echo "${DESTROY_JSON}" | jq -r '.transactionHash')
+              DESTROY_STATUS=$(echo "${DESTROY_JSON}" | jq -r '.status')
+              echo "destroy tx: ${DESTROY_TX}"
+              echo "status:     ${DESTROY_STATUS}"
+              echo "::set-output sdNoBurnDestroyTx ${DESTROY_TX}"
+
+              if [ "${DESTROY_STATUS}" != "0x1" ] && [ "${DESTROY_STATUS}" != "1" ]; then
+                echo "FAIL: destroy(address(0)) call failed (status=${DESTROY_STATUS})"
+                exit 1
+              fi
+
+              # EIP-8246: address(0) balance must NOT change
+              BALANCE_ZERO_AFTER=$(cast balance ${ADDR_ZERO} --rpc-url ${EL_RPC} 2>/dev/null || echo "0")
+              echo "address(0) balance after: ${BALANCE_ZERO_AFTER} wei (must equal before)"
+              if [ "${BALANCE_ZERO_AFTER}" != "${BALANCE_ZERO_BEFORE}" ]; then
+                echo "FAIL: address(0) balance changed — EIP-8246 no-burn is not active!"
+                echo "  Before: ${BALANCE_ZERO_BEFORE}"
+                echo "  After:  ${BALANCE_ZERO_AFTER}"
+                exit 1
+              fi
+              echo "EIP-8246 confirmed: address(0) balance unchanged (ETH was dropped) ✓"
+
+              # EIP-7708: NO Transfer log should appear (no actual ETH movement)
+              RECEIPT=$(curl -s -X POST \
+                -H "Content-Type: application/json" \
+                --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\",\"params\":[\"${DESTROY_TX}\"],\"id\":1}" \
+                ${EL_RPC})
+
+              TRANSFER_LOGS=$(echo "${RECEIPT}" | jq \
+                --arg topic "${TRANSFER_TOPIC}" \
+                '[.result.logs[] | select(.topics[0] == $topic)]')
+              TRANSFER_LOG_COUNT=$(echo "${TRANSFER_LOGS}" | jq 'length')
+              echo ""
+              echo "Transfer logs in destroy(address(0)) receipt: ${TRANSFER_LOG_COUNT} (expected 0)"
+
+              if [ "${TRANSFER_LOG_COUNT}" != "0" ] && [ "${TRANSFER_LOG_COUNT}" != "null" ]; then
+                echo "FAIL: destroy(address(0)) emitted ${TRANSFER_LOG_COUNT} Transfer log(s)."
+                echo "      EIP-8246 drops ETH at address(0) — no actual transfer occurs."
+                echo "      EIP-7708 must NOT emit a Transfer log when ETH is dropped."
+                echo "Transfer logs:"
+                echo "${TRANSFER_LOGS}"
+                exit 1
+              fi
+
+              echo ""
+              echo "PASS: SELFDESTRUCT to address(0) emitted no Transfer log"
+              echo "      EIP-7708 × EIP-8246 interaction verified correctly"
+              echo "      (ETH dropped → no recipient → no Transfer event)"
+              echo "::set-output sdNoBurnVerified true"
+
   # Final summary
   - name: run_shell
     title: "Print EIP-7708 test summary"
@@ -784,6 +1117,12 @@ SOLEOF
         RECEIVER_ADDR: tasks.deployWithValue.outputs.receiverAddr
         DEPLOY_TX4: tasks.deployWithValue.outputs.deployTx4
         CREATE_VERIFIED: tasks.deployWithValue.outputs.createValueVerified
+        SD_CONTRACT: tasks.selfDestructToAddr.outputs.sdContractAddr
+        SD_DESTROY_TX: tasks.selfDestructToAddr.outputs.sdDestroyTx
+        SD_TRANSFER_VERIFIED: tasks.selfDestructToAddr.outputs.sdTransferVerified
+        SD_NOBURN_CONTRACT: tasks.selfDestructToZero.outputs.sdNoBurnContractAddr
+        SD_NOBURN_TX: tasks.selfDestructToZero.outputs.sdNoBurnDestroyTx
+        SD_NOBURN_VERIFIED: tasks.selfDestructToZero.outputs.sdNoBurnVerified
       command: |
         TRANSFER_TX_HASH=$(echo $TRANSFER_TX_HASH | jq -r)
         RECEIPT_VERIFIED=$(echo $RECEIPT_VERIFIED | jq -r)
@@ -795,6 +1134,12 @@ SOLEOF
         RECEIVER_ADDR=$(echo $RECEIVER_ADDR | jq -r)
         DEPLOY_TX4=$(echo $DEPLOY_TX4 | jq -r)
         CREATE_VERIFIED=$(echo $CREATE_VERIFIED | jq -r)
+        SD_CONTRACT=$(echo $SD_CONTRACT | jq -r)
+        SD_DESTROY_TX=$(echo $SD_DESTROY_TX | jq -r)
+        SD_TRANSFER_VERIFIED=$(echo $SD_TRANSFER_VERIFIED | jq -r)
+        SD_NOBURN_CONTRACT=$(echo $SD_NOBURN_CONTRACT | jq -r)
+        SD_NOBURN_TX=$(echo $SD_NOBURN_TX | jq -r)
+        SD_NOBURN_VERIFIED=$(echo $SD_NOBURN_VERIFIED | jq -r)
         echo "============================================================"
         echo "EIP-7708 ETH Transfer Log Emission Test Summary"
         echo "============================================================"
@@ -826,6 +1171,18 @@ SOLEOF
         echo "  Deploy tx:              ${DEPLOY_TX4}"
         echo "  CREATE value verified:  ${CREATE_VERIFIED}"
         echo "  Status: PASS"
+        echo ""
+        echo "Test 5: SELFDESTRUCT to beneficiary emits Transfer log (EIP-7708 × EIP-8246)"
+        echo "  SelfDestructable contract: ${SD_CONTRACT}"
+        echo "  Destroy tx:                ${SD_DESTROY_TX}"
+        echo "  SELFDESTRUCT Transfer verified: ${SD_TRANSFER_VERIFIED}"
+        echo "  Status: PASS"
+        echo ""
+        echo "Test 6: SELFDESTRUCT to address(0) emits NO Transfer log (EIP-8246 no-burn)"
+        echo "  SelfDestructable contract: ${SD_NOBURN_CONTRACT}"
+        echo "  Destroy tx:                ${SD_NOBURN_TX}"
+        echo "  No-burn no-log verified:   ${SD_NOBURN_VERIFIED}"
+        echo "  Status: PASS"
         echo "============================================================"
 
 cleanupTasks:
@@ -837,6 +1194,7 @@ cleanupTasks:
         FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
         WORK_DIR: tasks.deployAndCallForwarder.outputs.workDir
         WORK_DIR4: tasks.deployWithValue.outputs.workDir4
+        WORK_DIR5: tasks.selfDestructToAddr.outputs.workDir5
       command: |
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
         if [ ! -z "$FOUNDRY_HOME" ] && [ -d "$FOUNDRY_HOME" ]; then
@@ -852,4 +1210,9 @@ cleanupTasks:
         if [ ! -z "$WORK_DIR4" ] && [ -d "$WORK_DIR4" ]; then
           rm -rf "$WORK_DIR4"
           echo "Cleaned up ValueReceiver work dir ${WORK_DIR4}"
+        fi
+        WORK_DIR5=$(echo $WORK_DIR5 | jq -r)
+        if [ ! -z "$WORK_DIR5" ] && [ -d "$WORK_DIR5" ]; then
+          rm -rf "$WORK_DIR5"
+          echo "Cleaned up SelfDestructable work dir ${WORK_DIR5}"
         fi
