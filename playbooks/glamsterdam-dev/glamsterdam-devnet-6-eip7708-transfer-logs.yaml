@@ -603,6 +603,170 @@ SOLEOF
               echo "PASS: Both Transfer logs present — EIP-7708 correctly instruments internal CALL transfers"
               echo "::set-output internalTransferVerified true"
 
+  # Test 4: CREATE-with-value emits Transfer log
+  # EIP-7708: ALL ETH movements emit Transfer logs — not just CALL-with-value but also
+  # contract creation transactions where value is attached. A tx creating a contract
+  # with 1 ETH should emit Transfer(deployer, new_contract, 1 ETH) in the receipt.
+  - name: run_tasks
+    title: "Test 4: CREATE-with-value also emits Transfer log (contract deployment with ETH)"
+    id: testCreateWithValue
+    config:
+      continueOnFailure: false
+      tasks:
+        - name: generate_child_wallet
+          id: createValueWallet
+          title: "Generate funded wallet for CREATE-with-value test (5 ETH)"
+          config:
+            prefundMinBalance: 5000000000000000000  # 5 ETH (covers 1 ETH value + gas + deploy)
+            walletSeed: "eip7708-create-with-value-test"
+          configVars:
+            privateKey: "walletPrivkey"
+
+        - name: run_shell
+          title: "Deploy ValueReceiver with 1 ETH and verify Transfer log in deployment receipt"
+          id: deployWithValue
+          timeout: 15m
+          config:
+            shell: bash
+            shellArgs: [--login]
+            envVars:
+              WALLET_PRIVKEY: tasks.createValueWallet.outputs.childWallet.privkey
+              WALLET_ADDRESS: tasks.createValueWallet.outputs.childWallet.address
+              TRANSFER_LOG_ADDR: transferLogAddress
+              TRANSFER_TOPIC: transferTopic
+              EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+              FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+            command: |
+              set -e
+              WALLET_PRIVKEY=$(echo $WALLET_PRIVKEY | jq -r)
+              WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+              TRANSFER_LOG_ADDR=$(echo $TRANSFER_LOG_ADDR | jq -r)
+              TRANSFER_TOPIC=$(echo $TRANSFER_TOPIC | jq -r)
+              EL_RPC=$(echo $EL_RPC | jq -r)
+              FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+
+              export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+              export HOME=${FOUNDRY_HOME}
+
+              echo "=== EIP-7708 Test 4: CREATE-with-value Transfer Log ==="
+              echo "Wallet: ${WALLET_ADDRESS}"
+              echo "RPC:    ${EL_RPC}"
+              echo ""
+              echo "Test goal: verify that a contract deployment with value (CREATE tx + 1 ETH)"
+              echo "  emits a Transfer log from 0xfff...ffe for the ETH move to the new contract."
+              echo ""
+
+              WORK_DIR4=$(mktemp -d -t eip7708-create-XXXXXXXXXX)
+              echo "::set-output workDir4 ${WORK_DIR4}"
+
+              # Deploy a minimal payable contract to receive the CREATE-with-value ETH
+              cat > ${WORK_DIR4}/ValueReceiver.sol << 'SOLEOF'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+// EIP-7708 CREATE-with-value test: deploying this contract with msg.value > 0
+// must emit a Transfer(deployer, newAddress, value) log from 0xfff...ffe.
+// Requires payable constructor so Solidity allows ETH during deployment.
+contract ValueReceiver {
+    constructor() payable {}
+    receive() external payable {}
+}
+SOLEOF
+
+              echo "Deploying ValueReceiver.sol with 1 ETH value..."
+              DEPLOY_OUT=$(forge create \
+                --rpc-url ${EL_RPC} \
+                --private-key ${WALLET_PRIVKEY} \
+                --legacy \
+                --value 1ether \
+                --json \
+                ${WORK_DIR4}/ValueReceiver.sol:ValueReceiver 2>&1)
+
+              RECEIVER=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              DEPLOY_TX=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
+
+              if [ -z "${RECEIVER}" ]; then
+                echo "FAIL: ValueReceiver deployment with 1 ETH failed"
+                echo "forge output:"
+                echo "${DEPLOY_OUT}"
+                exit 1
+              fi
+              echo "ValueReceiver deployed at: ${RECEIVER} (tx: ${DEPLOY_TX})"
+              echo "::set-output receiverAddr ${RECEIVER}"
+              echo "::set-output deployTx4 ${DEPLOY_TX}"
+
+              # Verify 1 ETH is in the contract
+              RECEIVER_BALANCE=$(cast balance ${RECEIVER} --rpc-url ${EL_RPC} 2>/dev/null || echo "0")
+              echo "ValueReceiver balance after deploy: ${RECEIVER_BALANCE} wei (expected: 1000000000000000000)"
+
+              # Fetch the deployment receipt and look for Transfer logs
+              RECEIPT=$(curl -s -X POST \
+                -H "Content-Type: application/json" \
+                --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\",\"params\":[\"${DEPLOY_TX}\"],\"id\":1}" \
+                ${EL_RPC})
+
+              echo ""
+              echo "Deployment receipt logs:"
+              echo "${RECEIPT}" | jq '.result.logs'
+              echo ""
+
+              # Filter for Transfer logs from the EIP-7708 system address
+              TRANSFER_LOGS=$(echo "${RECEIPT}" | jq \
+                --arg topic "${TRANSFER_TOPIC}" \
+                '[.result.logs[] | select(.topics[0] == $topic)]')
+              TRANSFER_LOG_COUNT=$(echo "${TRANSFER_LOGS}" | jq 'length')
+              echo "Transfer logs in deployment receipt: ${TRANSFER_LOG_COUNT}"
+
+              if [ "${TRANSFER_LOG_COUNT}" = "0" ] || [ "${TRANSFER_LOG_COUNT}" = "null" ]; then
+                echo "FAIL: CREATE-with-value deployment emitted no Transfer logs."
+                echo "      A CREATE tx with value=1 ETH MUST emit Transfer(deployer, newContract, 1 ETH)."
+                echo "      This indicates EIP-7708 is not hooked for CREATE value transfers."
+                exit 1
+              fi
+
+              # Verify the Transfer log fields
+              LOG_ADDR=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].address' | tr '[:upper:]' '[:lower:]')
+              LOG_FROM=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].topics[1]' | tr '[:upper:]' '[:lower:]')
+              LOG_TO=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].topics[2]' | tr '[:upper:]' '[:lower:]')
+              LOG_DATA=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].data' | tr '[:upper:]' '[:lower:]')
+
+              TRANSFER_LOG_ADDR_LC=$(echo "${TRANSFER_LOG_ADDR}" | tr '[:upper:]' '[:lower:]')
+              WALLET_LC=$(echo "${WALLET_ADDRESS}" | tr '[:upper:]' '[:lower:]' | sed 's/0x//')
+              RECEIVER_LC=$(echo "${RECEIVER}" | tr '[:upper:]' '[:lower:]' | sed 's/0x//')
+
+              echo "Log[0] — expected: system_addr Transfer(wallet→receiver, 1 ETH) [CREATE deploy]"
+              echo "  address: ${LOG_ADDR}"
+              echo "  from:    ${LOG_FROM}"
+              echo "  to:      ${LOG_TO}"
+              echo "  data:    ${LOG_DATA}"
+
+              if [ "${LOG_ADDR}" != "${TRANSFER_LOG_ADDR_LC}" ]; then
+                echo "FAIL: Transfer log emitting address mismatch: expected ${TRANSFER_LOG_ADDR_LC}, got ${LOG_ADDR}"
+                exit 1
+              fi
+
+              EXPECTED_FROM="0x000000000000000000000000${WALLET_LC}"
+              EXPECTED_TO="0x000000000000000000000000${RECEIVER_LC}"
+
+              if [ "${LOG_FROM}" != "${EXPECTED_FROM}" ]; then
+                echo "FAIL: Transfer log 'from' mismatch: expected ${EXPECTED_FROM} (deployer), got ${LOG_FROM}"
+                exit 1
+              fi
+              if [ "${LOG_TO}" != "${EXPECTED_TO}" ]; then
+                echo "FAIL: Transfer log 'to' mismatch: expected ${EXPECTED_TO} (new contract), got ${LOG_TO}"
+                exit 1
+              fi
+
+              # Verify value = 1 ETH
+              EXPECTED_DATA="0x0000000000000000000000000000000000000000000000000de0b6b3a7640000"
+              if [ "${LOG_DATA}" != "${EXPECTED_DATA}" ]; then
+                echo "FAIL: Transfer log data (value) mismatch: expected ${EXPECTED_DATA} (1 ETH), got ${LOG_DATA}"
+                exit 1
+              fi
+
+              echo "PASS: CREATE-with-value deployment emitted Transfer(deployer → newContract, 1 ETH)"
+              echo "      EIP-7708 correctly instruments CREATE value transfers"
+              echo "::set-output createValueVerified true"
+
   # Final summary
   - name: run_shell
     title: "Print EIP-7708 test summary"
@@ -617,6 +781,9 @@ SOLEOF
         FORWARDER_ADDR: tasks.deployAndCallForwarder.outputs.forwarderAddr
         FORWARD_TX: tasks.deployAndCallForwarder.outputs.forwardTxHash
         INTERNAL_VERIFIED: tasks.deployAndCallForwarder.outputs.internalTransferVerified
+        RECEIVER_ADDR: tasks.deployWithValue.outputs.receiverAddr
+        DEPLOY_TX4: tasks.deployWithValue.outputs.deployTx4
+        CREATE_VERIFIED: tasks.deployWithValue.outputs.createValueVerified
       command: |
         TRANSFER_TX_HASH=$(echo $TRANSFER_TX_HASH | jq -r)
         RECEIPT_VERIFIED=$(echo $RECEIPT_VERIFIED | jq -r)
@@ -625,6 +792,9 @@ SOLEOF
         FORWARDER_ADDR=$(echo $FORWARDER_ADDR | jq -r)
         FORWARD_TX=$(echo $FORWARD_TX | jq -r)
         INTERNAL_VERIFIED=$(echo $INTERNAL_VERIFIED | jq -r)
+        RECEIVER_ADDR=$(echo $RECEIVER_ADDR | jq -r)
+        DEPLOY_TX4=$(echo $DEPLOY_TX4 | jq -r)
+        CREATE_VERIFIED=$(echo $CREATE_VERIFIED | jq -r)
         echo "============================================================"
         echo "EIP-7708 ETH Transfer Log Emission Test Summary"
         echo "============================================================"
@@ -650,16 +820,23 @@ SOLEOF
         echo "  Forward tx:         ${FORWARD_TX}"
         echo "  Internal transfer verified: ${INTERNAL_VERIFIED}"
         echo "  Status: PASS"
+        echo ""
+        echo "Test 4: CREATE-with-value deployment emits Transfer log"
+        echo "  ValueReceiver contract: ${RECEIVER_ADDR}"
+        echo "  Deploy tx:              ${DEPLOY_TX4}"
+        echo "  CREATE value verified:  ${CREATE_VERIFIED}"
+        echo "  Status: PASS"
         echo "============================================================"
 
 cleanupTasks:
   - name: run_shell
-    title: "Cleanup foundry and forwarder temp dirs"
+    title: "Cleanup foundry and temp dirs"
     config:
       shell: bash
       envVars:
         FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
         WORK_DIR: tasks.deployAndCallForwarder.outputs.workDir
+        WORK_DIR4: tasks.deployWithValue.outputs.workDir4
       command: |
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
         if [ ! -z "$FOUNDRY_HOME" ] && [ -d "$FOUNDRY_HOME" ]; then
@@ -670,4 +847,9 @@ cleanupTasks:
         if [ ! -z "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
           rm -rf "$WORK_DIR"
           echo "Cleaned up forwarder work dir ${WORK_DIR}"
+        fi
+        WORK_DIR4=$(echo $WORK_DIR4 | jq -r)
+        if [ ! -z "$WORK_DIR4" ] && [ -d "$WORK_DIR4" ]; then
+          rm -rf "$WORK_DIR4"
+          echo "Cleaned up ValueReceiver work dir ${WORK_DIR4}"
         fi
