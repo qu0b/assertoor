@@ -24,8 +24,9 @@ config:
   #   2. Get block.gasUsed for the block containing clear().
   #   3. Sum all receipt.gasUsed for every tx in that block.
   #   4. Assert: block.gasUsed != sum(receipt.gasUsed)  [2D gas accounting active]
-  #      In Amsterdam these counters always diverge (unlike pre-Amsterdam where they
-  #      are always equal). If they are equal, EIP-7778 is not active.
+  #      The 8-slot clear() generates large SSTORE refunds via EIP-8037. In Amsterdam
+  #      these refunds cause block.gasUsed (max(regular,state)) to diverge from
+  #      sum(receipt.gasUsed). Pre-Amsterdam they were always equal.
   #   5. Log the delta to show how block gas differs from receipt-based accounting.
 
 tasks:
@@ -203,7 +204,7 @@ tasks:
         print(f"  EIP-7778 implementation (geth gaspool.go):")
         print(f"    block.gasUsed  = gp.Used()           = max(sum_regular, sum_state)")
         print(f"    sum(receipts)  = gp.CumulativeUsed() = sum(max(pre_refund-refund, floor))")
-        print(f"  These two counters DIVERGE in Amsterdam (they were always equal pre-Amsterdam).")
+        print(f"  In Amsterdam (EIP-7778), blocks with storage refunds cause these counters to diverge.")
         print(f"  Each cleared SSTORE slot contributes {REFUND_PER_SLOT:,} gas refund (EIP-8037).")
         print(f"  8 slots → uncapped refund = {N_SLOTS * REFUND_PER_SLOT:,} gas (cap = pre_refund/5).")
         print("")
@@ -213,7 +214,7 @@ tasks:
         # receipts use cumulative post-refund accounting. Pre-Amsterdam they were always equal.
         if block_gas == sum_receipt:
             print(f"FAIL [1/2]: block.gasUsed ({block_gas:,}) == sum(receipt.gasUsed) ({sum_receipt:,})")
-            print(f"      In Amsterdam, these two gas counters should ALWAYS diverge.")
+            print(f"      This block contains clear() with 8 SSTORE refunds — counters must diverge.")
             print(f"      If they are equal, EIP-7778 2D gas accounting is NOT active.")
             print(f"      (Pre-Amsterdam: block.gasUsed always equaled sum(receipt.gasUsed))")
             sys.exit(1)
