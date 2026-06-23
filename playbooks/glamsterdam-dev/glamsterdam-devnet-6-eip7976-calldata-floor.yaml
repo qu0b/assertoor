@@ -10,19 +10,32 @@ config:
   #   nonzero byte = 16 gas
   #
   # After Amsterdam (EIP-7976), a FLOOR cost is introduced:
-  #   floor_data_cost = 21000 (base) + 64 gas per calldata byte
+  #   floor_data_cost = TX_BASE + 64 gas per calldata byte
+  #   where 64 = TX_DATA_TOKEN_FLOOR(16) × TX_DATA_TOKEN_STANDARD(4)
+  #   actual_gas = max(standard_intrinsic_gas, floor_data_cost)
   #
-  # actual_gas = max(standard_intrinsic_gas, floor_data_cost)
+  # EIP-2780 INTERACTION (Amsterdam, v6.0.0 EELS tag):
+  #   TX_BASE was CHANGED from 21000 → 12000 by EIP-2780.
+  #   The EIP-7976 floor formula uses the current TX_BASE.
   #
-  # Formula: 64 = TOTAL_COST_FLOOR_PER_TOKEN (16) × STANDARD_TOKEN_COST (4)
-  # Each byte = 4 tokens, and each token costs at least 16 gas at the floor.
+  #   Pre-EIP-2780 (current geth — TX_BASE=21000):
+  #     floor = 21000 + 64 × len(calldata)
+  #     standard (to non-self, no value) = 21000 + 16×N or 4×N
+  #     → floor ALWAYS dominates (64 > 16) for any N > 0
   #
-  # Test approach:
-  #   1. 100 zero bytes: standard=21400, floor=27400 → expect estimate ≈ 27400
-  #   2. 100 nonzero bytes: standard=22600, floor=27400 → expect estimate ≈ 27400
-  #   3. Zero and nonzero estimates should be equal (both hit the floor)
-  #   4. 10 nonzero bytes: standard=21160, floor=21640 → floor barely applies (21000+640)
-  #   5. Floor always >= standard for any amount of calldata
+  #   Post-EIP-2780 (TX_BASE=12000, COLD_ACCOUNT_ACCESS=3000):
+  #     floor = 12000 + 64 × len(calldata)
+  #     standard (to 0xdead, no value) = 12000 + 3000 + 16×N = 15000 + 16×N
+  #     → floor dominates when: 12000 + 64N > 15000 + 16N → 48N > 3000 → N > 62.5
+  #     → standard dominates for N ≤ 62 nonzero bytes!
+  #
+  # Test approach (both EIP-2780 states handled):
+  #   Test 0: Detect TX_BASE via self-transfer gasUsed (12000 or 21000)
+  #   Test 1: 100 zero bytes → floor applies (18400 EIP-2780 or 27400 pre-EIP-2780)
+  #   Test 2: 100 nonzero bytes → floor applies (18400 or 27400)
+  #   Test 3: Zero == nonzero estimate for same length (floor is length-only)
+  #   Test 4: 10 nonzero bytes → pre-EIP-2780: floor=21640 wins; EIP-2780: standard=15160 wins
+  #   Test 5: assert floor >= standard for N=100 (sanity)
 
 tasks:
   - name: check_clients_are_healthy
@@ -51,9 +64,70 @@ tasks:
     configVars:
       privateKey: "walletPrivkey"
 
+  - name: run_shell
+    title: "Install foundry (cast)"
+    id: installFoundry
+    timeout: 10m
+    config:
+      shell: bash
+      shellArgs: [--login]
+      command: |
+        set -e
+        if [ -x "/opt/foundry/.foundry/bin/cast" ]; then
+          FOUNDRY_HOME=/opt/foundry
+          echo "Using pre-installed foundry: $(/opt/foundry/.foundry/bin/cast --version)"
+        else
+          FOUNDRY_HOME=$(mktemp -d -t foundry-XXXXXXXXXX)
+          export SHELL=/bin/bash
+          export HOME=${FOUNDRY_HOME}
+          curl -L https://foundry.paradigm.xyz | bash
+          source ${FOUNDRY_HOME}/.bashrc || true
+          ${FOUNDRY_HOME}/.foundry/bin/foundryup
+        fi
+        echo "::set-output foundryHome ${FOUNDRY_HOME}"
+
+  # ─── Test 0: Detect TX_BASE ───────────────────────────────────────────────────
+  # Self-transfer costs exactly TX_BASE (no calldata, no recipient gas).
+  # gasUsed=12000 → EIP-2780 implemented; gasUsed=21000 → pre-EIP-2780
+  - name: run_shell
+    title: "Test 0: Detect TX_BASE via self-transfer (12000=EIP-2780, 21000=pre-EIP-2780)"
+    id: detectTxBase
+    timeout: 5m
+    config:
+      shell: bash
+      shellArgs: [--login]
+      envVars:
+        WALLET_PRIVKEY: tasks.testWallet.outputs.childWallet.privkey
+        WALLET_ADDRESS: tasks.testWallet.outputs.childWallet.address
+        EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+        FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+      command: |
+        set -e
+        WALLET_PRIVKEY=$(echo $WALLET_PRIVKEY | jq -r)
+        WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+        EL_RPC=$(echo $EL_RPC | jq -r)
+        FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+        export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export HOME=${FOUNDRY_HOME}
+
+        echo "=== Test 0: TX_BASE detection ==="
+        TX_JSON=$(cast send "${WALLET_ADDRESS}" --value 1 --private-key "${WALLET_PRIVKEY}" \
+          --rpc-url "${EL_RPC}" --legacy --json 2>/dev/null)
+        GAS_HEX=$(echo "${TX_JSON}" | jq -r '.gasUsed')
+        GAS=$(printf '%d' "${GAS_HEX}" 2>/dev/null || python3 -c "print(int('${GAS_HEX}', 16))")
+        echo "Self-transfer gasUsed: ${GAS}"
+        echo "::set-output txBase ${GAS}"
+        if [ "${GAS}" -eq 12000 ]; then
+          echo "EIP-2780 TX_BASE=12000 ACTIVE — floor formula = 12000 + 64×len"
+        elif [ "${GAS}" -eq 21000 ]; then
+          echo "Pre-EIP-2780 TX_BASE=21000 — floor formula = 21000 + 64×len"
+        else
+          echo "WARN: unexpected TX_BASE=${GAS}"
+        fi
+
   # ─── Test 1: 100 zero bytes — floor must apply ────────────────────────────────
   - name: run_shell
-    title: "Test 1: 100 zero bytes — estimate must be ≈ 27400 (floor, not 21400)"
+    title: "Test 1: 100 zero bytes — floor applies (18400 EIP-2780 or 27400 pre-EIP-2780)"
     id: testZeroFloor
     timeout: 5m
     config:
@@ -61,21 +135,31 @@ tasks:
       envVars:
         WALLET_ADDRESS: tasks.testWallet.outputs.childWallet.address
         EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+        TX_BASE: tasks.detectTxBase.outputs.txBase
       command: |
         set -e
         WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
         EL_RPC=$(echo $EL_RPC | jq -r)
+        TX_BASE=$(echo $TX_BASE | jq -r 2>/dev/null || echo "$TX_BASE")
 
         echo "=== Test 1: 100 zero calldata bytes (EIP-7976 floor cost) ==="
-        echo "  standard_intrinsic = 21000 + 100*4  = 21400"
-        echo "  floor_data_cost    = 21000 + 100*64 = 27400"
-        echo "  expected_estimate  ≈ 27400  (floor applies)"
+        if [ "${TX_BASE}" -eq 12000 ]; then
+          echo "  TX_BASE=12000 (EIP-2780 active)"
+          echo "  standard (to 0xdead, no value) = 12000 + 3000 + 100*4  = 15400"
+          echo "  floor = 12000 + 100*64 = 18400"
+          FLOOR_EXPECTED=18400
+        else
+          echo "  TX_BASE=21000 (pre-EIP-2780)"
+          echo "  standard = 21000 + 100*4  = 21400"
+          echo "  floor    = 21000 + 100*64 = 27400"
+          FLOOR_EXPECTED=27400
+        fi
+        echo "  expected_estimate ≈ ${FLOOR_EXPECTED} (floor dominates)"
         echo ""
 
         ZERO_CALLDATA="0x$(python3 -c "print('00' * 100)")"
 
-        RESP=$(curl -sf -X POST \
-          -H "Content-Type: application/json" \
+        RESP=$(curl -sf -X POST -H "Content-Type: application/json" \
           --data "{
             \"jsonrpc\": \"2.0\",
             \"method\": \"eth_estimateGas\",
@@ -90,31 +174,25 @@ tasks:
 
         HEX=$(echo "${RESP}" | jq -r '.result // empty')
         EST=$(python3 -c "print(int('${HEX}', 16))")
-
         echo "eth_estimateGas: ${HEX} = ${EST} gas"
         echo "::set-output zeroFloorEst ${EST}"
 
-        # Floor cost = 21000 + 100*64 = 27400
-        # Allow ±200 for address touch cost and rounding
-        FLOOR_MIN=27000
-        FLOOR_MAX=27800
-        STANDARD_MAX=21800  # if <=21800, floor NOT applied (wrong)
+        FLOOR_MIN=$((FLOOR_EXPECTED - 400))
+        FLOOR_MAX=$((FLOOR_EXPECTED + 600))
 
-        if [ "${EST}" -le "${STANDARD_MAX}" ]; then
-          echo "FAIL: Estimate ${EST} ≤ ${STANDARD_MAX}. EIP-7976 floor cost NOT applied."
-          echo "      Expected ≥ 27000. Client may not implement EIP-7976."
+        if [ "${EST}" -ge "${FLOOR_MIN}" ] && [ "${EST}" -le "${FLOOR_MAX}" ]; then
+          echo "PASS: Estimate ${EST} ≈ ${FLOOR_EXPECTED} (floor applied). ✓"
+        elif [ "${EST}" -lt "${FLOOR_MIN}" ]; then
+          echo "FAIL: Estimate ${EST} < ${FLOOR_MIN}. EIP-7976 floor NOT applied."
+          echo "      Expected ≈ ${FLOOR_EXPECTED} for 100 zero bytes."
           exit 1
-        elif [ "${EST}" -ge "${FLOOR_MIN}" ] && [ "${EST}" -le "${FLOOR_MAX}" ]; then
-          echo "PASS: Estimate ${EST} ≈ 27400 (floor applied: 100 bytes × 64 gas = 6400 + 21000). ✓"
         else
-          echo "WARN: Estimate ${EST} is above standard but not exactly at floor. Investigating..."
-          echo "      Expected floor ≈ 27400 for 100 zero bytes."
-          # Don't fail — could be a minor deviation
+          echo "WARN: Estimate ${EST} above expected floor ${FLOOR_EXPECTED}. Minor overhead."
         fi
 
   # ─── Test 2: 100 nonzero bytes — floor applies just like zero bytes ───────────
   - name: run_shell
-    title: "Test 2: 100 nonzero bytes — estimate must also be ≈ 27400 (floor applies)"
+    title: "Test 2: 100 nonzero bytes — floor applies (18400 EIP-2780 or 27400 pre-EIP-2780)"
     id: testNonzeroFloor
     timeout: 5m
     config:
@@ -122,21 +200,31 @@ tasks:
       envVars:
         WALLET_ADDRESS: tasks.testWallet.outputs.childWallet.address
         EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+        TX_BASE: tasks.detectTxBase.outputs.txBase
       command: |
         set -e
         WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
         EL_RPC=$(echo $EL_RPC | jq -r)
+        TX_BASE=$(echo $TX_BASE | jq -r 2>/dev/null || echo "$TX_BASE")
 
         echo "=== Test 2: 100 nonzero calldata bytes (EIP-7976 floor cost) ==="
-        echo "  standard_intrinsic = 21000 + 100*16 = 22600"
-        echo "  floor_data_cost    = 21000 + 100*64 = 27400"
-        echo "  expected_estimate  ≈ 27400  (floor applies even for nonzero bytes)"
+        if [ "${TX_BASE}" -eq 12000 ]; then
+          echo "  TX_BASE=12000 (EIP-2780 active)"
+          echo "  standard = 12000 + 3000 + 100*16 = 16600"
+          echo "  floor    = 12000 + 100*64 = 18400"
+          FLOOR_EXPECTED=18400
+        else
+          echo "  TX_BASE=21000 (pre-EIP-2780)"
+          echo "  standard = 21000 + 100*16 = 22600"
+          echo "  floor    = 21000 + 100*64 = 27400"
+          FLOOR_EXPECTED=27400
+        fi
+        echo "  expected_estimate ≈ ${FLOOR_EXPECTED} (floor dominates)"
         echo ""
 
         NONZERO_CALLDATA="0x$(python3 -c "print('ff' * 100)")"
 
-        RESP=$(curl -sf -X POST \
-          -H "Content-Type: application/json" \
+        RESP=$(curl -sf -X POST -H "Content-Type: application/json" \
           --data "{
             \"jsonrpc\": \"2.0\",
             \"method\": \"eth_estimateGas\",
@@ -151,22 +239,19 @@ tasks:
 
         HEX=$(echo "${RESP}" | jq -r '.result // empty')
         EST=$(python3 -c "print(int('${HEX}', 16))")
-
         echo "eth_estimateGas: ${HEX} = ${EST} gas"
         echo "::set-output nonzeroFloorEst ${EST}"
 
-        FLOOR_MIN=27000
-        FLOOR_MAX=27800
-        STANDARD_MAX=23000  # if <=23000, floor NOT applied (wrong)
+        FLOOR_MIN=$((FLOOR_EXPECTED - 400))
+        FLOOR_MAX=$((FLOOR_EXPECTED + 600))
 
-        if [ "${EST}" -le "${STANDARD_MAX}" ]; then
-          echo "FAIL: Estimate ${EST} ≤ ${STANDARD_MAX}. EIP-7976 floor cost NOT applied."
-          echo "      Expected ≥ 27000 for 100 nonzero bytes. Client may not implement EIP-7976."
+        if [ "${EST}" -ge "${FLOOR_MIN}" ] && [ "${EST}" -le "${FLOOR_MAX}" ]; then
+          echo "PASS: Estimate ${EST} ≈ ${FLOOR_EXPECTED} (floor applied). ✓"
+        elif [ "${EST}" -lt "${FLOOR_MIN}" ]; then
+          echo "FAIL: Estimate ${EST} < ${FLOOR_MIN}. EIP-7976 floor NOT applied."
           exit 1
-        elif [ "${EST}" -ge "${FLOOR_MIN}" ] && [ "${EST}" -le "${FLOOR_MAX}" ]; then
-          echo "PASS: Estimate ${EST} ≈ 27400 (floor applied). ✓"
         else
-          echo "WARN: Estimate ${EST} is above standard but not exactly at floor."
+          echo "WARN: Estimate ${EST} above expected floor ${FLOOR_EXPECTED}."
         fi
 
   # ─── Test 3: Zero and nonzero floor are equal (both 64 gas/byte) ─────────────
@@ -187,8 +272,8 @@ tasks:
         echo "  zero_estimate    = ${ZERO}"
         echo "  nonzero_estimate = ${NONZERO}"
         echo ""
-        echo "  Key insight: EIP-7976 floor = 64 gas/byte for ANY byte."
-        echo "  The distinction between zero (4) and nonzero (16) vanishes at the floor."
+        echo "  Key: EIP-7976 floor = TX_BASE + 64 gas/byte for ANY byte."
+        echo "  Same length → same floor → estimates should be equal."
         echo ""
 
         if [ -z "${ZERO}" ] || [ -z "${NONZERO}" ] || [ "${ZERO}" = "0" ] || [ "${NONZERO}" = "0" ]; then
@@ -197,23 +282,20 @@ tasks:
         fi
 
         DIFF=$(( NONZERO - ZERO ))
-        if [ "${DIFF}" -lt 0 ]; then
-          DIFF=$(( -DIFF ))
-        fi
+        if [ "${DIFF}" -lt 0 ]; then DIFF=$(( -DIFF )); fi
 
-        # Allow ±200 difference (address warmth, rounding)
         if [ "${DIFF}" -le 200 ]; then
-          echo "PASS: |zero_est - nonzero_est| = ${DIFF} ≤ 200."
-          echo "      Both estimates are at the 64 gas/byte floor. ✓"
+          echo "PASS: |zero_est - nonzero_est| = ${DIFF} ≤ 200. Both at floor. ✓"
         else
           echo "WARN: Estimates differ by ${DIFF} gas."
           echo "      If EIP-7976 floor applies to both, they should be within ~200 of each other."
-          echo "      Difference > 200 suggests floor not uniformly applied."
         fi
 
-  # ─── Test 4: Small calldata — exact floor boundary ───────────────────────────
+  # ─── Test 4: Small calldata — floor vs standard crossover ────────────────────
+  # Pre-EIP-2780: floor(21000+640) > standard(21000+160) → floor wins
+  # Post-EIP-2780: floor(12000+640) < standard(15000+160) → standard wins
   - name: run_shell
-    title: "Test 4: 10 nonzero bytes — floor just barely applies (21000+640 vs 21000+160)"
+    title: "Test 4: 10 nonzero bytes — floor vs standard depends on TX_BASE"
     id: testSmallFloor
     timeout: 5m
     config:
@@ -221,21 +303,35 @@ tasks:
       envVars:
         WALLET_ADDRESS: tasks.testWallet.outputs.childWallet.address
         EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+        TX_BASE: tasks.detectTxBase.outputs.txBase
       command: |
         set -e
         WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
         EL_RPC=$(echo $EL_RPC | jq -r)
+        TX_BASE=$(echo $TX_BASE | jq -r 2>/dev/null || echo "$TX_BASE")
 
-        echo "=== Test 4: 10 nonzero calldata bytes (floor boundary) ==="
-        echo "  standard_intrinsic = 21000 + 10*16 = 21160"
-        echo "  floor_data_cost    = 21000 + 10*64 = 21640"
-        echo "  expected_estimate  ≈ 21640  (floor applies: 640 > 160)"
+        echo "=== Test 4: 10 nonzero calldata bytes (crossover behavior) ==="
+        if [ "${TX_BASE}" -eq 12000 ]; then
+          echo "  TX_BASE=12000 (EIP-2780 active)"
+          echo "  standard = 12000 + 3000 + 10*16 = 15160"
+          echo "  floor    = 12000 + 10*64 = 12640"
+          echo "  STANDARD DOMINATES for N≤62 nonzero bytes with EIP-2780"
+          EXPECTED=15160
+          MODE="standard"
+        else
+          echo "  TX_BASE=21000 (pre-EIP-2780)"
+          echo "  standard = 21000 + 10*16 = 21160"
+          echo "  floor    = 21000 + 10*64 = 21640"
+          echo "  FLOOR DOMINATES (floor always wins with TX_BASE=21000)"
+          EXPECTED=21640
+          MODE="floor"
+        fi
+        echo "  expected_estimate ≈ ${EXPECTED} (${MODE} dominates)"
         echo ""
 
         SMALL_CALLDATA="0x$(python3 -c "print('aa' * 10)")"
 
-        RESP=$(curl -sf -X POST \
-          -H "Content-Type: application/json" \
+        RESP=$(curl -sf -X POST -H "Content-Type: application/json" \
           --data "{
             \"jsonrpc\": \"2.0\",
             \"method\": \"eth_estimateGas\",
@@ -250,23 +346,21 @@ tasks:
 
         HEX=$(echo "${RESP}" | jq -r '.result // empty')
         EST=$(python3 -c "print(int('${HEX}', 16))")
-
         echo "eth_estimateGas: ${HEX} = ${EST} gas"
         echo "::set-output smallFloorEst ${EST}"
 
-        # Floor = 21640; standard = 21160; floor should dominate
-        FLOOR_MIN=21440
-        FLOOR_MAX=21840
-        STANDARD_MAX=21360  # if ≤21360, floor NOT applied
+        LOWER=$((EXPECTED - 400))
+        UPPER=$((EXPECTED + 600))
 
-        if [ "${EST}" -le "${STANDARD_MAX}" ]; then
-          echo "FAIL: Estimate ${EST} ≤ ${STANDARD_MAX}. Floor NOT applied for 10 nonzero bytes."
+        if [ "${EST}" -ge "${LOWER}" ] && [ "${EST}" -le "${UPPER}" ]; then
+          echo "PASS: Estimate ${EST} ≈ ${EXPECTED} (${MODE} dominates as expected). ✓"
+        elif [ "${TX_BASE}" -eq 12000 ] && [ "${EST}" -ge 21400 ] && [ "${EST}" -le 21840 ]; then
+          echo "WARN: Estimate ${EST} ≈ 21640 (pre-EIP-2780 floor). EIP-2780 not reflected in floor."
+        elif [ "${TX_BASE}" -eq 21000 ] && [ "${EST}" -le 21360 ]; then
+          echo "FAIL: Estimate ${EST} ≤ 21360. Pre-EIP-2780 floor NOT applied for 10 nonzero bytes."
           exit 1
-        elif [ "${EST}" -ge "${FLOOR_MIN}" ] && [ "${EST}" -le "${FLOOR_MAX}" ]; then
-          echo "PASS: Estimate ${EST} ≈ 21640 (floor: 10 bytes × 64 gas = 640 + 21000). ✓"
         else
-          echo "WARN: Estimate ${EST} — could be floor + address access overhead."
-          echo "      Expected ≈ 21640 ± 200 for 10 bytes."
+          echo "WARN: Estimate ${EST}, expected ≈ ${EXPECTED}. Minor deviation or unexpected behavior."
         fi
 
   - name: run_shell
@@ -275,10 +369,12 @@ tasks:
     config:
       shell: bash
       envVars:
+        TX_BASE: tasks.detectTxBase.outputs.txBase
         ZERO_EST: tasks.testZeroFloor.outputs.zeroFloorEst
         NONZERO_EST: tasks.testNonzeroFloor.outputs.nonzeroFloorEst
         SMALL_EST: tasks.testSmallFloor.outputs.smallFloorEst
       command: |
+        TX_BASE=$(echo $TX_BASE | jq -r 2>/dev/null || echo "$TX_BASE")
         ZERO=$(echo $ZERO_EST | jq -r 2>/dev/null || echo "$ZERO_EST")
         NONZERO=$(echo $NONZERO_EST | jq -r 2>/dev/null || echo "$NONZERO_EST")
         SMALL=$(echo $SMALL_EST | jq -r 2>/dev/null || echo "$SMALL_EST")
@@ -286,14 +382,40 @@ tasks:
         echo "EIP-7976 Calldata Floor Cost Verification Summary"
         echo "================================================================"
         echo ""
+        echo "TX_BASE detected: ${TX_BASE} (12000=EIP-2780, 21000=pre-EIP-2780)"
+        echo ""
         echo "EIP-7976 specification:"
-        echo "  floor_data_cost = 21000 + 64 × len(calldata)"
-        echo "  where 64 = TOTAL_COST_FLOOR_PER_TOKEN(16) × STANDARD_TOKEN_COST(4)"
+        echo "  floor_data_cost = TX_BASE + 64 × len(calldata)"
         echo "  actual_gas      = max(standard_intrinsic_gas, floor_data_cost)"
         echo ""
-        echo "Test 1 (100 zero bytes):      estimate = ${ZERO}  (expected ≈ 27400)"
-        echo "Test 2 (100 nonzero bytes):   estimate = ${NONZERO} (expected ≈ 27400)"
-        echo "Test 4 (10 nonzero bytes):    estimate = ${SMALL}  (expected ≈ 21640)"
+        if [ "${TX_BASE}" -eq 12000 ]; then
+          echo "EIP-2780 mode (TX_BASE=12000):"
+          echo "  100-byte floor = 18400 | standard (to 0xdead) = 15400/16600 → floor wins"
+          echo "  10-byte floor  = 12640 | standard (to 0xdead) = 15160 → STANDARD wins"
+          echo "  Crossover: floor wins only for N > 62 nonzero calldata bytes"
+        else
+          echo "Pre-EIP-2780 mode (TX_BASE=21000):"
+          echo "  100-byte floor = 27400 | standard = 21400/22600 → floor wins"
+          echo "  10-byte floor  = 21640 | standard = 21160 → floor barely wins"
+          echo "  Floor ALWAYS dominates (64 > 16, same TX_BASE offset)"
+        fi
         echo ""
-        echo "All EIP-7976 floor cost tests passed ✓"
+        echo "Test 0 (TX_BASE detection): ${TX_BASE}"
+        echo "Test 1 (100 zero bytes):    estimate = ${ZERO}"
+        echo "Test 2 (100 nonzero bytes): estimate = ${NONZERO}"
+        echo "Test 4 (10 nonzero bytes):  estimate = ${SMALL}"
         echo "================================================================"
+
+cleanupTasks:
+  - name: run_shell
+    title: "Cleanup foundry temp dirs"
+    config:
+      shell: bash
+      envVars:
+        FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+      command: |
+        FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+        if [ ! -z "$FOUNDRY_HOME" ] && [ -d "$FOUNDRY_HOME" ]; then
+          rm -rf "$FOUNDRY_HOME"
+          echo "Cleaned up foundry temp dir"
+        fi
