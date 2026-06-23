@@ -41,7 +41,7 @@ tasks:
         sudo dpkg --add-architecture amd64 < /dev/null
         sudo apt-get update < /dev/null
         sudo apt-get install -y build-essential python3 python3-pip python3-dev \
-          libc6:amd64 autoconf automake libffi-dev libtool pkg-config < /dev/null
+          libc6:amd64 autoconf automake libffi-dev libtool pkg-config cmake < /dev/null
         sudo rm /usr/lib/python3*/EXTERNALLY-MANAGED 2>/dev/null || true
         sudo pip install uv
 
