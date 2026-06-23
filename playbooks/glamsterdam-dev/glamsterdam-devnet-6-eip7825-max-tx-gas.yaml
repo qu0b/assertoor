@@ -289,11 +289,11 @@ tasks:
         DEPLOY_JSON=$(cast send \
           --value 0 \
           --gas-limit 500000 \
-          --create "${INITCODE}" \
           --private-key "${WALLET_PRIVKEY}" \
           --rpc-url "${EL_RPC}" \
           --legacy \
-          --json 2>&1)
+          --json \
+          --create "${INITCODE}" 2>&1)
 
         echo "Deploy output: ${DEPLOY_JSON}"
 
