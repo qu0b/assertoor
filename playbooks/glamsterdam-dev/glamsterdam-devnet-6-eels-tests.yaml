@@ -15,7 +15,10 @@ config:
   # NOTE (EIP-8282): builder execution requests require the genesis-generator to
   #   pre-deploy the builder registry contract at 0x0000884d2AA32eAa155F59A2f24eFa73D9008282.
   #   Ensure kurtosis config uses genesis-generator >= 6.1.0.
-  specTestsBranch: "tests-glamsterdam-devnet@v6.0.0"
+  # Use our patched branch that cherry-picks the pending-nonce fix (BUG-020) on top of
+  # tests-glamsterdam-devnet@v6.0.0. Without this fix, nonce cascade causes 200+ failures
+  # per EIP ("replacement transaction underpriced" when the local nonce counter resets).
+  specTestsBranch: "qu0b/fix/tests-glamsterdam-devnet-v6.0.0"
 tasks:
   # install python + deps
   - name: run_shell
@@ -61,7 +64,7 @@ tasks:
         echo "::set-var eelsDir ${EELS_DIR}"
         echo "${EELS_DIR}" > $ASSERTOOR_SUMMARY
 
-        git clone https://github.com/ethereum/execution-specs.git \
+        git clone https://github.com/qu0b/execution-specs.git \
           --depth 1 --branch ${GIT_BRANCH} --single-branch ${EELS_DIR}
 
         cd ${EELS_DIR}
