@@ -356,7 +356,7 @@ tasks:
           configVars:
             privateKey: "walletPrivkey"
         - name: run_shell
-          title: "EIP-7954: Increase maximum contract size (24K -> 32K)"
+          title: "EIP-7954: Increase maximum contract size (24K -> 64K)"
           id: eip7954
           timeout: 30m
           config:
@@ -740,6 +740,67 @@ tasks:
               echo "EIP-8282: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
+
+        - name: run_shell
+          title: "EELS Test Summary — fail if any EIP has 0 tests passing"
+          id: summary
+          timeout: 2m
+          config:
+            shell: bash
+            envVars:
+              P_2780: tasks.eip2780.outputs.passed
+              T_2780: tasks.eip2780.outputs.total
+              P_7708: tasks.eip7708.outputs.passed
+              T_7708: tasks.eip7708.outputs.total
+              P_7778: tasks.eip7778.outputs.passed
+              T_7778: tasks.eip7778.outputs.total
+              P_7843: tasks.eip7843.outputs.passed
+              T_7843: tasks.eip7843.outputs.total
+              P_7928: tasks.eip7928.outputs.passed
+              T_7928: tasks.eip7928.outputs.total
+              P_7954: tasks.eip7954.outputs.passed
+              T_7954: tasks.eip7954.outputs.total
+              P_7976: tasks.eip7976.outputs.passed
+              T_7976: tasks.eip7976.outputs.total
+              P_7981: tasks.eip7981.outputs.passed
+              T_7981: tasks.eip7981.outputs.total
+              P_7997: tasks.eip7997.outputs.passed
+              T_7997: tasks.eip7997.outputs.total
+              P_8024: tasks.eip8024.outputs.passed
+              T_8024: tasks.eip8024.outputs.total
+              P_8037: tasks.eip8037.outputs.passed
+              T_8037: tasks.eip8037.outputs.total
+              P_8246: tasks.eip8246.outputs.passed
+              T_8246: tasks.eip8246.outputs.total
+              P_8282: tasks.eip8282.outputs.passed
+              T_8282: tasks.eip8282.outputs.total
+            command: |
+              set -e
+              get_int() { echo "$1" | jq -r 2>/dev/null || echo "0"; }
+              FAILED=0
+              printf "%-10s  %-20s\n" "EIP" "RESULT"
+              printf "%-10s  %-20s\n" "----------" "--------------------"
+              for eip in 2780 7708 7778 7843 7928 7954 7976 7981 7997 8024 8037 8246 8282; do
+                eval "RAW_P=\$P_${eip}"
+                eval "RAW_T=\$T_${eip}"
+                P=$(get_int "$RAW_P")
+                T=$(get_int "$RAW_T")
+                if [ "$T" -gt 0 ] 2>/dev/null && [ "$P" -eq 0 ] 2>/dev/null; then
+                  STATUS="FAIL  (0/${T} passed)"
+                  FAILED=1
+                elif [ "$T" -eq 0 ] 2>/dev/null; then
+                  STATUS="SKIP  (no tests found)"
+                else
+                  STATUS="OK    (${P}/${T} passed)"
+                fi
+                printf "EIP-%-6s  %s\n" "$eip" "$STATUS"
+              done
+              echo ""
+              if [ "$FAILED" -eq 1 ]; then
+                echo "SUMMARY: FAIL — one or more EIPs had 0 tests passing (client may not implement the EIP)"
+                exit 1
+              fi
+              echo "SUMMARY: PASS — all EIPs with tests have at least one passing result"
 
 cleanupTasks:
   - name: run_shell
