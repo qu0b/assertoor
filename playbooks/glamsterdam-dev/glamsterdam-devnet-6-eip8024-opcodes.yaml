@@ -6,7 +6,7 @@ config:
   walletSeed: "spectests-gd6-eip8024"
   # EIP-8024: Adds three new EVM opcodes for more flexible stack manipulation:
   #
-  #   SWAPN (0xe3): swap top of stack with the N+2th stack item (N from immediate byte)
+  #   SWAPN (0xe7): swap top of stack with the N+2th stack item (N from immediate byte)
   #     - SWAP1 = 0x90 swaps top with 2nd; SWAPN 0x00 swaps top with 2nd (SWAP1 equivalent)
   #     - SWAPN 0xfe swaps top with 256th item (far beyond old SWAP16)
   #
@@ -396,7 +396,7 @@ tasks:
         echo "  EXCHANGE: ${EP}/${ET} EELS tests passed"
         echo ""
         echo "EIP-8024 specification:"
-        echo "  SWAPN    0xe3 <imm>  -- swap top with (imm+2)th stack item, gas=3"
+        echo "  SWAPN    0xe7 <imm>  -- swap top with (imm+2)th stack item, gas=3"
         echo "  DUPN     0xe6 <imm>  -- dup (imm+1)th stack item, gas=3"
         echo "  EXCHANGE 0xe8 <imm>  -- swap (high+1)th and (low+1)th items, gas=3"
         echo "  Works in legacy bytecode (no EOF required)"
