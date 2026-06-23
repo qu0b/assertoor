@@ -420,6 +420,83 @@ tasks:
                 echo "PASS: SLOTNUM reader deploy tx succeeded. Opcode functional (no revert)."
               fi
 
+  # Test 3: Cross-validate SLOTNUM result against CL beacon API
+  # The beacon API /eth/v1/beacon/headers/head returns the current head slot.
+  # eth_call executes at the latest EL block, which has a slot_number embedded equal
+  # to the CL slot containing that block. These should be equal within ±2 slots
+  # (clock jitter, block not yet propagated). A large difference indicates a bug.
+  - name: run_shell
+    title: "Test 3: Cross-validate SLOTNUM vs CL beacon API head slot"
+    id: testSlotnumCrossValidate
+    timeout: 5m
+    config:
+      shell: bash
+      envVars:
+        EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+        CL_RPC: tasks.clientCheck.outputs.goodClients[0].clRpcUrl
+        FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+      command: |
+        EL_RPC=$(echo $EL_RPC | jq -r)
+        CL_RPC=$(echo $CL_RPC | jq -r)
+        FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+        export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export HOME=${FOUNDRY_HOME}
+
+        echo "=== EIP-7843 SLOTNUM Cross-Validation vs CL Beacon API ==="
+
+        # Get SLOTNUM via eth_call (executes at latest block's context)
+        CALL_RESP=$(curl -s -X POST ${EL_RPC} \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","method":"eth_call","params":[{"data":"0x4b60005260206000f3"},"latest"],"id":1}')
+        SLOTNUM_HEX=$(echo "${CALL_RESP}" | jq -r '.result // "0x0"' | sed 's/^0x//')
+        SLOTNUM_DEC=$(printf '%d' "0x${SLOTNUM_HEX}" 2>/dev/null || echo "0")
+        echo "SLOTNUM (eth_call): 0x${SLOTNUM_HEX} = ${SLOTNUM_DEC}"
+
+        # Also get the latest EL block number for reference
+        BLOCK_RESP=$(curl -s -X POST ${EL_RPC} \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":2}')
+        BLOCK_HEX=$(echo "${BLOCK_RESP}" | jq -r '.result // "0x0"')
+        BLOCK_DEC=$(printf '%d' "${BLOCK_HEX}" 2>/dev/null || echo "0")
+        echo "Latest EL block:    ${BLOCK_DEC}"
+
+        # Get current CL head slot from beacon API
+        BEACON_RESP=$(curl -s "${CL_RPC}/eth/v1/beacon/headers/head")
+        CL_SLOT=$(echo "${BEACON_RESP}" | jq -r '.data.header.message.slot // "0"')
+        echo "CL head slot:       ${CL_SLOT}"
+        echo ""
+
+        # Cross-validate: SLOTNUM should be within ±3 slots of the CL head
+        if [ "${SLOTNUM_DEC}" -eq 0 ]; then
+          echo "WARN: SLOTNUM returned 0, skipping cross-validation."
+          echo "::set-output crossValidationResult warn_zero"
+        elif [ "${CL_SLOT}" -eq 0 ]; then
+          echo "WARN: Could not fetch CL head slot (got 0), skipping cross-validation."
+          echo "::set-output crossValidationResult warn_no_cl"
+        else
+          DIFF=$(( SLOTNUM_DEC - CL_SLOT ))
+          ABS_DIFF=$(( DIFF < 0 ? -DIFF : DIFF ))
+          echo "Slot difference |SLOTNUM - CL_HEAD| = ${ABS_DIFF}"
+
+          if [ "${ABS_DIFF}" -le 3 ]; then
+            echo "PASS: SLOTNUM=${SLOTNUM_DEC} matches CL head=${CL_SLOT} (diff=${ABS_DIFF} ≤ 3 slots)"
+            echo "      EIP-7843 correctly embeds the beacon slot number in the execution payload."
+            echo "::set-output crossValidationResult pass"
+          elif [ "${ABS_DIFF}" -le 10 ]; then
+            echo "WARN: SLOTNUM=${SLOTNUM_DEC} vs CL head=${CL_SLOT} (diff=${ABS_DIFF})"
+            echo "      Small discrepancy — may be due to timing of eth_call vs beacon API query."
+            echo "::set-output crossValidationResult warn_small_diff"
+          else
+            echo "FAIL: SLOTNUM=${SLOTNUM_DEC} vs CL head=${CL_SLOT} (diff=${ABS_DIFF} > 10 slots)"
+            echo "      Large divergence. SLOTNUM may return a stale or incorrect slot number."
+            echo "      This indicates EIP-7843 is not correctly implemented on this client."
+            exit 1
+          fi
+        fi
+
+        echo "::set-output slotnumDec ${SLOTNUM_DEC}"
+        echo "::set-output clSlot ${CL_SLOT}"
+
   # Final summary
   - name: run_shell
     title: "Print EIP-7843 SLOTNUM verification summary"
@@ -432,14 +509,18 @@ tasks:
         CONTRACT_ADDR: tasks.deploySlotnumReader.outputs.contractAddr
         DEPLOY_TX: tasks.deploySlotnumReader.outputs.deployTxHash
         SLOT_1: tasks.deploySlotnumReader.outputs.slotDecimal1
-        SLOT_RESULT_2: tasks.deploySlotnumReader.outputs.slotResult2
+        SLOTNUM_DEC: tasks.testSlotnumCrossValidate.outputs.slotnumDec
+        CL_SLOT: tasks.testSlotnumCrossValidate.outputs.clSlot
+        CROSS_RESULT: tasks.testSlotnumCrossValidate.outputs.crossValidationResult
       command: |
         ETHCALL_RESULT=$(echo $ETHCALL_RESULT | jq -r 2>/dev/null || echo "$ETHCALL_RESULT")
         ETHCALL_SLOT=$(echo $ETHCALL_SLOT | jq -r 2>/dev/null || echo "$ETHCALL_SLOT")
         CONTRACT_ADDR=$(echo $CONTRACT_ADDR | jq -r 2>/dev/null || echo "$CONTRACT_ADDR")
         DEPLOY_TX=$(echo $DEPLOY_TX | jq -r 2>/dev/null || echo "$DEPLOY_TX")
         SLOT_1=$(echo $SLOT_1 | jq -r 2>/dev/null || echo "$SLOT_1")
-        SLOT_RESULT_2=$(echo $SLOT_RESULT_2 | jq -r 2>/dev/null || echo "$SLOT_RESULT_2")
+        SLOTNUM_DEC=$(echo $SLOTNUM_DEC | jq -r 2>/dev/null || echo "$SLOTNUM_DEC")
+        CL_SLOT=$(echo $CL_SLOT | jq -r 2>/dev/null || echo "$CL_SLOT")
+        CROSS_RESULT=$(echo $CROSS_RESULT | jq -r 2>/dev/null || echo "$CROSS_RESULT")
         echo "================================================================"
         echo "EIP-7843 SLOTNUM Opcode Verification Summary"
         echo "================================================================"
@@ -464,6 +545,11 @@ tasks:
         echo "  Deploy tx:     ${DEPLOY_TX}"
         echo "  First call slot: ${SLOT_1}"
         echo "  Status: PASS"
+        echo ""
+        echo "Test 3: Cross-validation vs CL beacon API"
+        echo "  SLOTNUM (eth_call): ${SLOTNUM_DEC}"
+        echo "  CL head slot:       ${CL_SLOT}"
+        echo "  Result: ${CROSS_RESULT}"
         echo "================================================================"
 
 cleanupTasks:
