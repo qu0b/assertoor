@@ -42,7 +42,7 @@ tasks:
     title: "Wait for network to be stable (epoch 2)"
     timeout: 1h
     config:
-      minEpochNumber: 2
+      minEpochNumber: 6
 
   # install foundry (forge + cast) for contract deployment and interaction
   - name: run_shell
