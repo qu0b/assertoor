@@ -179,7 +179,7 @@ tasks:
         DEPLOY_OUT=$(forge create \
           --rpc-url ${EL_RPC_HOST} \
           --private-key ${WALLET_PRIVKEY} \
-          --legacy \
+          --legacy --broadcast \
           --json \
           ${WORK_DIR}/StorageWriter.sol:StorageWriter)
 

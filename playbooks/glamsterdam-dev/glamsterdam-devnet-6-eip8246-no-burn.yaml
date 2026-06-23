@@ -177,7 +177,7 @@ tasks:
                 --rpc-url ${EL_RPC_HOST} \
                 --private-key ${DEPLOYER_PRIVKEY} \
                 --value ${FUND_WEI} \
-                --legacy \
+                --legacy --broadcast \
                 --json \
                 ${WORK_DIR}/SelfDestructTest.sol:SelfDestructTest)
 
@@ -329,7 +329,7 @@ tasks:
                 --rpc-url ${EL_RPC_HOST} \
                 --private-key ${DEPLOYER_PRIVKEY} \
                 --value ${FUND_WEI} \
-                --legacy \
+                --legacy --broadcast \
                 --json \
                 ${WORK_DIR}/SelfDestructInConstructor.sol:SelfDestructInConstructor)
 

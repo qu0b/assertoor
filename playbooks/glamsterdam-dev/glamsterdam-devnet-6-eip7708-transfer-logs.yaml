@@ -473,7 +473,7 @@ tasks:
               DEPLOY_OUT=$(forge create \
                 --rpc-url ${EL_RPC} \
                 --private-key ${WALLET_PRIVKEY} \
-                --legacy \
+                --legacy --broadcast \
                 --json \
                 ${WORK_DIR}/Forwarder.sol:Forwarder 2>&1)
 
@@ -683,7 +683,7 @@ tasks:
               DEPLOY_OUT=$(forge create \
                 --rpc-url ${EL_RPC} \
                 --private-key ${WALLET_PRIVKEY} \
-                --legacy \
+                --legacy --broadcast \
                 --value 1ether \
                 --json \
                 ${WORK_DIR4}/ValueReceiver.sol:ValueReceiver 2>&1)
@@ -851,7 +851,7 @@ tasks:
               DEPLOY_OUT=$(forge create \
                 --rpc-url ${EL_RPC} \
                 --private-key ${WALLET_PRIVKEY} \
-                --legacy \
+                --legacy --broadcast \
                 --value 1ether \
                 --json \
                 ${WORK_DIR5}/SelfDestructable.sol:SelfDestructable 2>&1)
@@ -1038,7 +1038,7 @@ tasks:
               DEPLOY_OUT=$(forge create \
                 --rpc-url ${EL_RPC} \
                 --private-key ${WALLET_PRIVKEY} \
-                --legacy \
+                --legacy --broadcast \
                 --value 0.5ether \
                 --json \
                 ${WORK_DIR5}/SelfDestructable.sol:SelfDestructable 2>&1)

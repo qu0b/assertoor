@@ -141,7 +141,7 @@ tasks:
         DEPLOY_OUT=$(forge create \
           --rpc-url ${EL_RPC_HOST} \
           --private-key ${WALLET_PRIVKEY} \
-          --legacy \
+          --legacy --broadcast \
           --json \
           ${WORK_DIR}/LargeContract.sol:LargeContract 2>&1)
 
@@ -235,7 +235,7 @@ tasks:
         VL_OUT=$(forge create \
           --rpc-url ${EL_RPC_HOST} \
           --private-key ${WALLET_PRIVKEY} \
-          --legacy \
+          --legacy --broadcast \
           --json \
           ${WORK_DIR}/VeryLargeContract.sol:VeryLargeContract 2>&1) || true
 

@@ -163,7 +163,7 @@ tasks:
               DEPLOY_OUT=$(forge create \
                 --rpc-url ${EL_RPC} \
                 --private-key ${WALLET_PRIVKEY} \
-                --legacy \
+                --legacy --broadcast \
                 --json \
                 ${WORK_DIR}/GasTest.sol:GasTest)
 
