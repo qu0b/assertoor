@@ -447,21 +447,21 @@ tasks:
 
               # Write a minimal Forwarder contract that forwards all received ETH to an address
               cat > ${WORK_DIR}/Forwarder.sol << 'SOLEOF'
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
-// EIP-7708 internal transfer test: every nonzero-value ETH movement must emit
-// a Transfer(from,to,value) log from 0xfffffffffffffffffffffffffffffffffffffffe.
-// Calling forward(to) with msg.value causes TWO internal ETH moves:
-//   1. tx.value from msg.sender into this contract (external tx)
-//   2. msg.value forwarded from this contract to `to` (internal CALL)
-// Both must appear as Transfer logs in the transaction receipt.
-contract Forwarder {
-    function forward(address payable to) external payable {
-        (bool ok,) = to.call{value: msg.value}("");
-        require(ok, "forward failed");
-    }
-}
-SOLEOF
+              // SPDX-License-Identifier: MIT
+              pragma solidity ^0.8.28;
+              // EIP-7708 internal transfer test: every nonzero-value ETH movement must emit
+              // a Transfer(from,to,value) log from 0xfffffffffffffffffffffffffffffffffffffffe.
+              // Calling forward(to) with msg.value causes TWO internal ETH moves:
+              //   1. tx.value from msg.sender into this contract (external tx)
+              //   2. msg.value forwarded from this contract to `to` (internal CALL)
+              // Both must appear as Transfer logs in the transaction receipt.
+              contract Forwarder {
+                  function forward(address payable to) external payable {
+                      (bool ok,) = to.call{value: msg.value}("");
+                      require(ok, "forward failed");
+                  }
+              }
+              SOLEOF
 
               echo "Deploying Forwarder contract..."
               DEPLOY_OUT=$(forge create \
@@ -662,16 +662,16 @@ SOLEOF
 
               # Deploy a minimal payable contract to receive the CREATE-with-value ETH
               cat > ${WORK_DIR4}/ValueReceiver.sol << 'SOLEOF'
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
-// EIP-7708 CREATE-with-value test: deploying this contract with msg.value > 0
-// must emit a Transfer(deployer, newAddress, value) log from 0xfff...ffe.
-// Requires payable constructor so Solidity allows ETH during deployment.
-contract ValueReceiver {
-    constructor() payable {}
-    receive() external payable {}
-}
-SOLEOF
+              // SPDX-License-Identifier: MIT
+              pragma solidity ^0.8.28;
+              // EIP-7708 CREATE-with-value test: deploying this contract with msg.value > 0
+              // must emit a Transfer(deployer, newAddress, value) log from 0xfff...ffe.
+              // Requires payable constructor so Solidity allows ETH during deployment.
+              contract ValueReceiver {
+                  constructor() payable {}
+                  receive() external payable {}
+              }
+              SOLEOF
 
               echo "Deploying ValueReceiver.sol with 1 ETH value..."
               DEPLOY_OUT=$(forge create \
@@ -827,19 +827,19 @@ SOLEOF
               echo "::set-output workDir5 ${WORK_DIR5}"
 
               cat > ${WORK_DIR5}/SelfDestructable.sol << 'SOLEOF'
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
-// EIP-7708 SELFDESTRUCT test: calling destroy(beneficiary) in a separate tx from creation
-// moves contract ETH to beneficiary without destroying the contract (EIP-6780 semantics).
-// EIP-7708 must emit Transfer(contract, beneficiary, balance) from 0xfff...ffe.
-// EIP-8246 (no-burn): destroy(address(0)) drops ETH without emitting Transfer.
-contract SelfDestructable {
-    constructor() payable {}
-    function destroy(address payable beneficiary) external {
-        selfdestruct(beneficiary);
-    }
-}
-SOLEOF
+              // SPDX-License-Identifier: MIT
+              pragma solidity ^0.8.28;
+              // EIP-7708 SELFDESTRUCT test: calling destroy(beneficiary) in a separate tx from creation
+              // moves contract ETH to beneficiary without destroying the contract (EIP-6780 semantics).
+              // EIP-7708 must emit Transfer(contract, beneficiary, balance) from 0xfff...ffe.
+              // EIP-8246 (no-burn): destroy(address(0)) drops ETH without emitting Transfer.
+              contract SelfDestructable {
+                  constructor() payable {}
+                  function destroy(address payable beneficiary) external {
+                      selfdestruct(beneficiary);
+                  }
+              }
+              SOLEOF
 
               echo "Deploying SelfDestructable with 1 ETH..."
               DEPLOY_OUT=$(forge create \
