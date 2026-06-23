@@ -173,8 +173,8 @@ tasks:
         echo "receipt.gasUsed:    ${CLEAR_GAS_HEX} (hex)"
         echo "block:              ${BLOCK_NUM}"
 
-        # Fetch block gasUsed and all tx hashes
-        BLOCK_JSON=$(cast rpc eth_getBlockByHash "${BLOCK_HASH}" false \
+        # Fetch block gasUsed and all tx hashes (use blockNumber to avoid hash quoting issues)
+        BLOCK_JSON=$(cast rpc eth_getBlockByNumber "${BLOCK_NUM}" false \
           --rpc-url ${EL_RPC_HOST})
         BLOCK_GAS_HEX=$(echo "${BLOCK_JSON}" | jq -r '.result.gasUsed')
         TX_HASHES=$(echo "${BLOCK_JSON}" | jq -r '.result.transactions[]')

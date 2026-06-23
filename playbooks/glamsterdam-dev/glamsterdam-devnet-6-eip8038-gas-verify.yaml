@@ -6,22 +6,19 @@ config:
   # EIP-8038: COLD_STORAGE_WRITE = 5000 (replaces Prague's COLD_SLOAD + SSTORE_SET = 2100+20000=22100)
   # WARM_ACCESS = 100 (unchanged from EIP-2929)
   #
+  # EIP-8037 INTERACTION (Amsterdam):
+  #   Cold SSTORE to a new slot also charges StateGas = StorageCreationSize(64) × CostPerStateByte(1530) = 97920
+  #   So total gasUsed for one cold SSTORE (create) includes both regular and state gas:
+  #     Amsterdam (EIP-8038 + EIP-8037): TX_BASE + 5000 + 97920 + ~600 dispatch = ~TX_BASE+103520
+  #     Without EIP-8038 (Prague SSTORE + EIP-8037): TX_BASE + 22100 + 97920 + ~600 dispatch = ~TX_BASE+120620
+  #
   # EIP-2780 INTERACTION (Amsterdam v6.0.0 EELS tag):
-  #   TX_BASE:             21000 → 12000 (reduced)
+  #   TX_BASE:             21000 → 12000 (reduced, not yet in geth)
   #   COLD_STORAGE_ACCESS: 2100  → 3000  (increased — EIP-8038 only changes WRITE cost)
-  #
-  # Gas bounds for a single cold SSTORE via a minimal Solidity dispatch:
-  #   Prague (pre-Amsterdam): 21000 + 2100 + 20000 + ~1000 dispatch = ~44100
-  #   Amsterdam pre-EIP-2780: 21000 + 5000 (COLD_STORAGE_WRITE)     + ~1000 dispatch = ~27000
-  #   Amsterdam with EIP-2780: 12000 + 5000 (COLD_STORAGE_WRITE)    + ~1000 dispatch = ~18000
-  #
-  # Gas bounds for a cold SLOAD via eth_estimateGas:
-  #   Pre-EIP-2780: 21000 (TX_BASE) + 2100 (COLD_STORAGE_ACCESS) + ~500 dispatch = ~23600
-  #   EIP-2780:     12000 (TX_BASE) + 3000 (COLD_STORAGE_ACCESS) + ~500 dispatch = ~15500
   #
   # We test:
   #   0. Detect TX_BASE via eth_estimateGas on zero-value zero-address self-transfer
-  #   1. Cold SSTORE: gasUsed in [TX_BASE+500, TX_BASE+8000+500] (EIP-8038 vs Prague ~TX_BASE+22100)
+  #   1. Cold SSTORE: gasUsed in [TX_BASE+97420, TX_BASE+105000] (EIP-8038+EIP-8037 vs Prague+EIP-8037)
   #   2. Cold SLOAD via eth_estimateGas: < TX_BASE + COLD_STORAGE_ACCESS + 1500 overhead
   #   3. ETH transfer baseline: self-transfer costs exactly TX_BASE (detected in Test 0)
 
@@ -107,7 +104,7 @@ tasks:
           echo "  Cold SLOAD bound:  < 17000  (12000+3000+~1500 dispatch)"
         elif [ "${TX_BASE}" -eq 21000 ]; then
           echo "Pre-EIP-2780: TX_BASE=21000, COLD_STORAGE_ACCESS=2100"
-          echo "  Cold SSTORE range: [21500, 30000] (21000+5000+dispatch vs Prague ~44100)"
+          echo "  Cold SSTORE range: [119420, 127920] (21000+97920+5000+dispatch vs Prague+EIP-8037 ~141600)"
           echo "  Cold SLOAD bound:  < 24500  (21000+2100+~1400 dispatch)"
         else
           echo "WARN: unexpected TX_BASE=${TX_BASE}"
@@ -256,37 +253,43 @@ tasks:
               echo "::set-output coldBlockNumber $(echo "${RECEIPT}" | jq -r '.blockNumber')"
 
               # ----------------------------------------------------------------
-              # Assertion: Amsterdam cold SSTORE should be well below Prague pricing.
-              # Bounds depend on detected TX_BASE (EIP-2780 interaction):
-              #   Pre-EIP-2780 (TX_BASE=21000): SSTORE range [21500, 30000]
-              #     Prague equiv: 21000+22100+dispatch ~= 44100
-              #   EIP-2780 (TX_BASE=12000, COLD_STORAGE_ACCESS=3000): SSTORE range [12500, 21000]
-              #     Prague equiv: 12000+23000+dispatch ~= 36000
+              # Assertion: Amsterdam cold SSTORE (EIP-8038 + EIP-8037).
+              # EIP-8037 charges StateGas=97920 for creating a new storage slot.
+              # Both regular gas (5000 COLD_STORAGE_WRITE) and state gas (97920) appear in gasUsed.
+              # Bounds:
+              #   EIP-8038 + EIP-8037 active: TX_BASE + 5000 + 97920 + ~600 = TX_BASE+103520
+              #     → range: [TX_BASE+97420, TX_BASE+105000]
+              #   Without EIP-8038 (Prague SSTORE + EIP-8037): TX_BASE + 22100 + 97920 + ~600 = TX_BASE+120620
+              #     → range: [TX_BASE+113000, TX_BASE+125000]
               # ----------------------------------------------------------------
+              STATE_GAS_CREATE=97920  # StorageCreationSize(64) × CostPerStateByte(1530)
               COLD_GAS_INT=${COLD_GAS}
-              LOWER_BOUND=$((TX_BASE + 500))
-              UPPER_BOUND=$((TX_BASE + 9000))
+              LOWER_BOUND=$((TX_BASE + STATE_GAS_CREATE + 500))
+              UPPER_BOUND=$((TX_BASE + STATE_GAS_CREATE + 9000))
+              PRAGUE_LOWER=$((TX_BASE + STATE_GAS_CREATE + 21000))
 
               if [ "${COLD_GAS_INT}" -lt "${LOWER_BOUND}" ]; then
-                echo "FAIL: Cold SSTORE gasUsed=${COLD_GAS_INT} is below TX_BASE+500 (${LOWER_BOUND})."
-                echo "      TX_BASE=${TX_BASE}. Receipt below TX_BASE indicates a malformed result."
+                echo "FAIL: Cold SSTORE gasUsed=${COLD_GAS_INT} is below expected lower bound (${LOWER_BOUND})."
+                echo "      TX_BASE=${TX_BASE}, StateGas=${STATE_GAS_CREATE}. Receipt below expected indicates malformed result."
                 exit 1
               fi
 
-              if [ "${COLD_GAS_INT}" -gt "${UPPER_BOUND}" ]; then
-                echo "FAIL: Cold SSTORE gasUsed=${COLD_GAS_INT} exceeds Amsterdam upper bound (${UPPER_BOUND})."
-                echo "      TX_BASE=${TX_BASE}. Expected EIP-8038 total: TX_BASE+5000+dispatch = ~$((TX_BASE+6000))."
-                if [ "${TX_BASE}" -eq 21000 ]; then
-                  echo "      Prague would yield: TX_BASE(21000)+COLD_SLOAD(2100)+SSTORE_SET(20000)+dispatch ~= 44100."
-                else
-                  echo "      Prague would yield: TX_BASE(12000)+COLD_STORAGE_ACCESS(3000)+SSTORE_SET(20000)+dispatch ~= 36000."
-                fi
+              if [ "${COLD_GAS_INT}" -gt "${UPPER_BOUND}" ] && [ "${COLD_GAS_INT}" -lt "${PRAGUE_LOWER}" ]; then
+                echo "WARN: Cold SSTORE gasUsed=${COLD_GAS_INT} is between EIP-8038 range and Prague range."
+                echo "      Expected [${LOWER_BOUND}, ${UPPER_BOUND}] or [${PRAGUE_LOWER}, ~$((TX_BASE+STATE_GAS_CREATE+25000))]."
+                exit 1
+              fi
+
+              if [ "${COLD_GAS_INT}" -ge "${PRAGUE_LOWER}" ]; then
+                echo "FAIL: Cold SSTORE gasUsed=${COLD_GAS_INT} is in Prague SSTORE range (>= ${PRAGUE_LOWER})."
+                echo "      TX_BASE=${TX_BASE}. Expected EIP-8038 total: TX_BASE+5000+StateGas(97920)+dispatch = ~$((TX_BASE+STATE_GAS_CREATE+6000))."
+                echo "      Prague SSTORE = TX_BASE+22100+StateGas(97920)+dispatch = ~$((TX_BASE+STATE_GAS_CREATE+23000))."
                 echo "      Likely cause: EIP-8038 not implemented (COLD_STORAGE_WRITE=5000 not active)."
                 exit 1
               fi
 
               echo "PASS: Cold SSTORE gasUsed=${COLD_GAS_INT} is in expected Amsterdam range [${LOWER_BOUND}, ${UPPER_BOUND}]."
-              echo "      TX_BASE=${TX_BASE}, EIP-8038 COLD_STORAGE_WRITE=5000 is in effect."
+              echo "      TX_BASE=${TX_BASE}, EIP-8038 COLD_STORAGE_WRITE=5000 + EIP-8037 StateGas(${STATE_GAS_CREATE}) confirmed."
 
         - name: run_shell
           title: "Verify cold SLOAD cost after cold SSTORE"

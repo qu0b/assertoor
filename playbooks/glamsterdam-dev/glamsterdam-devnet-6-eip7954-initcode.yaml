@@ -182,7 +182,7 @@ tasks:
         echo "PASS: 30 KiB contract deployed and on-chain code size = ${CODE_LEN} bytes (> old Prague 24576 limit)"
 
         # Also call size() to sanity-check the contract logic works
-        DATA_LEN=$(cast call ${CONTRACT} "size()(uint256)" --rpc-url ${EL_RPC_HOST})
+        DATA_LEN=$(cast call ${CONTRACT} "size()(uint256)" --rpc-url ${EL_RPC_HOST} | awk '{print $1}')
         echo "Contract size() returned: ${DATA_LEN} (expected: ${SIZE})"
         if [ "${DATA_LEN}" != "${SIZE}" ]; then
           echo "FAIL: contract size() returned ${DATA_LEN}, expected ${SIZE}"

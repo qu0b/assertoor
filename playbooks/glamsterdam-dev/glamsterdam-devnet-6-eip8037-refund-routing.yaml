@@ -236,16 +236,24 @@ tasks:
         # ----------------------------------------------------------------
         # Verify EIP-8037 RefundState is active via gasUsed comparison.
         #
-        # EIP-8037 active (RefundState builds state reservoir):
-        #   Only the FIRST slot spills 97920 to regular gas.
-        #   Subsequent slots charge from the RefundState reservoir (StateGas).
-        #   Expected gasUsed: 200000–550000
+        # setAndClear(8) mechanics (Amsterdam: EIP-8037 + EIP-8038 both active):
+        #   SET 8 slots (cold, 0→1): each EIP-8038 cost = 5000 + StateGas(97920)
+        #   CLEAR 8 slots (warm, 1→0 where original=0):
+        #     → RefundState(-97920) per slot cancels the StateGas
+        #     → AddRefund(2800) regular refund per slot (capped at gasUsed/5)
+        #   Net StateGas = 0 (all 8 create StateGas cancelled by 8 RefundState)
+        #   Regular gas pre-refund ≈ 21000 + 8×5000 + 8×100 + ~500 = 62300
+        #   Regular refund = min(8×2800, 62300/5) = min(22400, 12460) = 12460
+        #   Post-refund ≈ 62300 - 12460 = 49840
         #
-        # EIP-8037 NOT active (no RefundState, all 8 spill to regular):
-        #   8 × 97920 = 783360 extra regular gas consumed.
-        #   Expected gasUsed: 900000–1200000
+        # Without EIP-8037 (Osaka, no RefundState, no EIP-8038):
+        #   SET 8 slots cold: 8 × (2100+20000) = 176800
+        #   CLEAR 8 warm: 8 × 100 + AddRefund(4800) each
+        #   Pre-refund ≈ 21000 + 176800 + 800 + 500 = 199100
+        #   Refund = min(8×4800, 199100/5) = min(38400, 39820) = 38400
+        #   Post-refund ≈ 199100 - 38400 = 160700
         #
-        # The two cases differ by ~3×, making them unambiguously distinguishable.
+        # Two cases differ by ~3×, making them unambiguously distinguishable.
         # ----------------------------------------------------------------
         python3 - << PYEOF
         gas_used   = int("${GAS_USED}", 16) if "${GAS_USED}".startswith("0x") else int("${GAS_USED}")
@@ -254,14 +262,14 @@ tasks:
         N_SLOTS         = 8
         REFUND_PER_SLOT = 64 * 1530   # 97920: COST_PER_STATE_BYTE × StorageCreationSize
 
-        # EIP-8037 active: only 1 spillover of 97920 to regular gas.
-        # Regular ops for 8 set+clear ≈ 8 × (22100 + 3000) + intrinsic ~25000 = ~226800
-        # Plus 1 spillover: 97920. Total ≈ 324720. Allow 2× margin.
-        EIP8037_LOWER = 150_000
-        EIP8037_UPPER = 600_000
+        # EIP-8037 active (Amsterdam): RefundState cancels all StateGas for setAndClear.
+        # Net regular gas ≈ 50000 (TX_BASE + 8×EIP-8038-SSTORE + 8×CLEAR - refund-cap).
+        EIP8037_LOWER = 20_000
+        EIP8037_UPPER = 100_000
 
-        # EIP-8037 NOT active: all 8 spills → 783360 extra + regular ops ≈ 1010160
-        NO_EIP8037_LOWER = 750_000
+        # EIP-8037 NOT active (Osaka): Prague SSTORE pricing, no RefundState.
+        # Post-refund ≈ 160700.
+        NO_EIP8037_LOWER = 110_000
 
         print("")
         print("=== EIP-8037 State Gas Refund Analysis (within-tx create+clear) ===")
@@ -269,19 +277,18 @@ tasks:
         print(f"effectiveGasPrice:       {gas_price:,} wei")
         print("")
         print(f"EIP-8037 active range:   [{EIP8037_LOWER:,}, {EIP8037_UPPER:,}]")
-        print(f"  → only 1 state-gas spillover ({REFUND_PER_SLOT:,}) to regular gas")
-        print(f"  → 7 subsequent slots charge from RefundState reservoir (StateGas)")
-        print(f"No EIP-8037 range:       [{NO_EIP8037_LOWER:,}, ~1200000]")
-        print(f"  → all {N_SLOTS} slots spill state gas to regular ({N_SLOTS} × {REFUND_PER_SLOT:,} = {N_SLOTS * REFUND_PER_SLOT:,})")
+        print(f"  → setAndClear(8): RefundState cancels all {N_SLOTS}×{REFUND_PER_SLOT:,} StateGas, net ~50k gas")
+        print(f"No EIP-8037 range:       [{NO_EIP8037_LOWER:,}, ~250000]")
+        print(f"  → setAndClear(8): Prague SSTORE pricing, post-refund-cap ~160k gas")
 
         if EIP8037_LOWER <= gas_used <= EIP8037_UPPER:
             print(f"")
             print(f"PASS: gasUsed {gas_used:,} is in EIP-8037 active range [{EIP8037_LOWER:,}, {EIP8037_UPPER:,}].")
-            print(f"      RefundState (0→x→0 within-tx) is reducing state-gas spillover. ✓")
+            print(f"      RefundState (0→x→0 within-tx) cancelled all StateGas. ✓")
         elif gas_used >= NO_EIP8037_LOWER:
             print(f"")
             print(f"FAIL: gasUsed {gas_used:,} is in the no-EIP-8037 range (>= {NO_EIP8037_LOWER:,}).")
-            print(f"      All {N_SLOTS} slots appear to have spilled state gas to regular gas.")
+            print(f"      setAndClear(8) did not cancel StateGas via RefundState.")
             print(f"      EIP-8037 RefundState for case 2.2.2.1 (0→x→0 within-tx) is NOT active. ✗")
             exit(1)
         else:
@@ -327,10 +334,10 @@ tasks:
         echo "  gasUsed (receipt):      ${GAS_USED_DEC} gas"
         echo "  effectiveGasPrice:      ${GAS_PRICE} wei/gas"
         echo ""
-        echo "  EIP-8037 active range:  [150000, 600000] gas"
-        echo "    → only 1 spillover of 97920 to regular gas"
-        echo "  No-EIP-8037 range:      [>= 750000] gas"
-        echo "    → all 8 × 97920 = 783360 spill to regular gas"
+        echo "  EIP-8037 active range:  [20000, 100000] gas"
+        echo "    → setAndClear(8): RefundState cancels all StateGas, net ~50k gas"
+        echo "  No-EIP-8037 range:      [>= 110000] gas"
+        echo "    → setAndClear(8): Prague SSTORE pricing, post-refund-cap ~160k gas"
         echo ""
         echo "  Status: PASS"
         echo "================================================================"
