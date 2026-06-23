@@ -63,8 +63,12 @@ tasks:
         set -e
         # Use pre-installed foundry if available (built into Docker image)
         if [ -x "/opt/foundry/.foundry/bin/cast" ]; then
-          FOUNDRY_HOME=/opt/foundry
           echo "Using pre-installed foundry: $(/opt/foundry/.foundry/bin/cast --version)"
+          # Create a writable HOME for forge cache; symlink the pre-installed binaries
+          FOUNDRY_HOME=$(mktemp -d -t foundry-XXXXXXXXXX)
+          export HOME="${FOUNDRY_HOME}"
+          mkdir -p "${FOUNDRY_HOME}/.foundry"
+          ln -s /opt/foundry/.foundry/bin "${FOUNDRY_HOME}/.foundry/bin"
         else
           FOUNDRY_HOME=$(mktemp -d -t foundry-XXXXXXXXXX)
           export SHELL=/bin/bash
