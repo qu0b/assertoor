@@ -12,7 +12,7 @@ They deploy contracts, send transactions, and verify on-chain state against EIP 
 | Filename | ID | Name | EIP(s) | Notes |
 |----------|----|------|--------|-------|
 | `glamsterdam-devnet-6-eels-tests.yaml` | `glamsterdam-devnet-6-eels-tests` | Run EELS execution spec tests | 2780, 7708, 7778, 7843, 7928, 7954, 7976, 7981, 7997, 8024, 8037, 8246, 8282 | Comprehensive EELS spec suite; requires genesis-generator >= 6.1.0 |
-| `glamsterdam-devnet-6-eip7708-transfer-logs.yaml` | `glamsterdam-devnet-6-eip7708-transfer-logs` | ETH transfer log emission | EIP-7708 | Checks `Transfer(address,address,uint256)` logs from `0xfff...ffe` |
+| `glamsterdam-devnet-6-eip7708-transfer-logs.yaml` | `glamsterdam-devnet-6-eip7708-transfer-logs` | ETH transfer log emission | EIP-7708 | Checks `Transfer(address,address,uint256)` logs from `0xfff...ffe`; Test 3 deploys Forwarder to verify internal CALL-with-value also emits Transfer logs |
 | `glamsterdam-devnet-6-eip7843-slotnum.yaml` | `glamsterdam-devnet-6-eip7843-slotnum` | SLOTNUM opcode (0x4b) verification | EIP-7843 | Deploys via EIP-7997 Arachnid factory; checks opcode value >= 64 at epoch 2 |
 | `glamsterdam-devnet-6-eip7954-initcode.yaml` | `glamsterdam-devnet-6-eip7954-initcode` | 128 KiB initcode / 64 KiB code size limit | EIP-7954 | Deploys 30 KiB (> old 24576 Prague limit) and 60 KiB contracts; requires foundry |
 | `glamsterdam-devnet-6-eip7997-factory.yaml` | `glamsterdam-devnet-6-eip7997-factory` | Arachnid CREATE2 factory pre-deploy | EIP-7997 | Verifies factory at `0x4e59b44847b379578588920ca78fbf26c0b4956c`; no foundry needed |
@@ -53,9 +53,12 @@ Playbooks that install foundry: `eip7954-initcode`, `eip7778-block-gas`, `eip803
 `eip8038-gas-verify`, `eip8246-no-burn`, `builder-lifecycle`, `eip7981-access-list-gas`,
 `eip2780-intrinsic-gas`, `eels-tests` (indirectly via foundry steps).
 
-Playbooks that do NOT require foundry: `eip7997-factory`, `eip7843-slotnum`, `eip7708-transfer-logs`,
-`eip7928-bal-hash` (all use eth_getBlockByNumber/eth_call via curl only),
+Playbooks that do NOT require foundry: `eip7997-factory`, `eip7843-slotnum`,
+`eip7928-bal-hash` (use eth_getBlockByNumber/eth_call via curl only),
 `eip8024-opcodes` (uses EELS for the suite; eth_call smoke test via curl).
+
+`eip7708-transfer-logs` installs foundry for Test 3 (deploys a Forwarder contract to
+verify internal CALL-with-value also emits Transfer logs). Tests 1 and 2 use curl only.
 
 ---
 

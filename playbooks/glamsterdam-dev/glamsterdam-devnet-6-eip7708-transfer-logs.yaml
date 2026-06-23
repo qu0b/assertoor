@@ -52,7 +52,11 @@ tasks:
           echo "cast not found after foundryup"
           exit 1
         fi
-        echo "cast installed at ${FOUNDRY_HOME}/.foundry/bin/cast"
+        if [ ! -f "${FOUNDRY_HOME}/.foundry/bin/forge" ]; then
+          echo "forge not found after foundryup"
+          exit 1
+        fi
+        echo "cast and forge installed at ${FOUNDRY_HOME}/.foundry/bin/"
 
   # Test 1: Simple EOA-to-EOA ETH transfer emits Transfer log
   - name: run_tasks
@@ -380,6 +384,225 @@ tasks:
 
               echo "PASS: Zero-value transfer correctly emits no Transfer log"
 
+  # Test 3: Internal CALL-with-value emits Transfer log
+  # EIP-7708 applies to ALL ETH movements in the EVM, not just external transactions.
+  # This test deploys a Forwarder contract and calls it with 2 ETH, then verifies that
+  # the receipt contains TWO Transfer logs: one for EOA→Forwarder (external tx value)
+  # and one for Forwarder→recipient (internal CALL with value).
+  - name: run_tasks
+    title: "Test 3: Internal CALL-with-value also emits Transfer log (EIP-7708 full coverage)"
+    id: testInternalTransfer
+    config:
+      continueOnFailure: false
+      tasks:
+        - name: generate_child_wallet
+          id: internalTransferWallet
+          title: "Generate funded wallet for internal transfer test (10 ETH)"
+          config:
+            prefundMinBalance: 10000000000000000000  # 10 ETH (covers 2 ETH value + gas + forge deploy)
+            walletSeed: "eip7708-internal-transfer-test"
+          configVars:
+            privateKey: "walletPrivkey"
+
+        - name: run_shell
+          title: "Deploy Forwarder contract and verify internal CALL Transfer log"
+          id: deployAndCallForwarder
+          timeout: 15m
+          config:
+            shell: bash
+            shellArgs: [--login]
+            envVars:
+              WALLET_PRIVKEY: tasks.internalTransferWallet.outputs.childWallet.privkey
+              WALLET_ADDRESS: tasks.internalTransferWallet.outputs.childWallet.address
+              TRANSFER_LOG_ADDR: transferLogAddress
+              TRANSFER_TOPIC: transferTopic
+              EL_RPC: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+              FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+            command: |
+              set -e
+              WALLET_PRIVKEY=$(echo $WALLET_PRIVKEY | jq -r)
+              WALLET_ADDRESS=$(echo $WALLET_ADDRESS | jq -r)
+              TRANSFER_LOG_ADDR=$(echo $TRANSFER_LOG_ADDR | jq -r)
+              TRANSFER_TOPIC=$(echo $TRANSFER_TOPIC | jq -r)
+              EL_RPC=$(echo $EL_RPC | jq -r)
+              FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
+
+              export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+              export HOME=${FOUNDRY_HOME}
+
+              echo "=== EIP-7708 Test 3: Internal CALL Transfer Log ==="
+              echo "Wallet: ${WALLET_ADDRESS}"
+              echo "RPC:    ${EL_RPC}"
+              echo ""
+              echo "Test goal: verify that internal EVM CALL-with-value also emits"
+              echo "  a Transfer log from the EIP-7708 system address (0xfff...ffe)."
+              echo "  External tx value:   EOA -> Forwarder  (2 ETH) -> Transfer log 1"
+              echo "  Internal CALL value: Forwarder -> recipient (2 ETH) -> Transfer log 2"
+              echo ""
+
+              # Create a temp dir for the Solidity source
+              WORK_DIR=$(mktemp -d -t eip7708-internal-XXXXXXXXXX)
+              echo "::set-output workDir ${WORK_DIR}"
+
+              # Write a minimal Forwarder contract that forwards all received ETH to an address
+              cat > ${WORK_DIR}/Forwarder.sol << 'SOLEOF'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+// EIP-7708 internal transfer test: every nonzero-value ETH movement must emit
+// a Transfer(from,to,value) log from 0xfffffffffffffffffffffffffffffffffffffffe.
+// Calling forward(to) with msg.value causes TWO internal ETH moves:
+//   1. tx.value from msg.sender into this contract (external tx)
+//   2. msg.value forwarded from this contract to `to` (internal CALL)
+// Both must appear as Transfer logs in the transaction receipt.
+contract Forwarder {
+    function forward(address payable to) external payable {
+        (bool ok,) = to.call{value: msg.value}("");
+        require(ok, "forward failed");
+    }
+}
+SOLEOF
+
+              echo "Deploying Forwarder contract..."
+              DEPLOY_OUT=$(forge create \
+                --rpc-url ${EL_RPC} \
+                --private-key ${WALLET_PRIVKEY} \
+                --legacy \
+                --json \
+                ${WORK_DIR}/Forwarder.sol:Forwarder 2>&1)
+
+              FORWARDER=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo // empty')
+              DEPLOY_TX=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash // empty')
+
+              if [ -z "${FORWARDER}" ]; then
+                echo "FAIL: Forwarder contract deployment failed"
+                echo "forge output:"
+                echo "${DEPLOY_OUT}"
+                exit 1
+              fi
+              echo "Forwarder deployed at: ${FORWARDER} (tx: ${DEPLOY_TX})"
+              echo "::set-output forwarderAddr ${FORWARDER}"
+
+              # Recipient address (distinct from forwarder and wallet)
+              RECIPIENT="0x1234123412341234123412341234123412341234"
+
+              echo ""
+              echo "Calling Forwarder.forward(${RECIPIENT}) with 2 ETH..."
+              echo "Expected: 2 Transfer logs in receipt (EOA→Forwarder + Forwarder→recipient)"
+              echo ""
+
+              # Call forward(recipient) with 2 ETH — triggers TWO Transfer logs if EIP-7708 is correct
+              FORWARD_JSON=$(cast send ${FORWARDER} \
+                "forward(address)" ${RECIPIENT} \
+                --value 2ether \
+                --private-key ${WALLET_PRIVKEY} \
+                --rpc-url ${EL_RPC} \
+                --json)
+
+              FORWARD_TX=$(echo "${FORWARD_JSON}" | jq -r '.transactionHash')
+              FORWARD_STATUS=$(echo "${FORWARD_JSON}" | jq -r '.status')
+              echo "Forward tx hash: ${FORWARD_TX}"
+              echo "Forward status:  ${FORWARD_STATUS}"
+              echo "::set-output forwardTxHash ${FORWARD_TX}"
+
+              if [ "${FORWARD_STATUS}" != "0x1" ] && [ "${FORWARD_STATUS}" != "1" ]; then
+                echo "FAIL: forward() call failed (status=${FORWARD_STATUS})"
+                exit 1
+              fi
+
+              # Fetch full receipt to inspect all logs
+              RECEIPT=$(curl -s -X POST \
+                -H "Content-Type: application/json" \
+                --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\",\"params\":[\"${FORWARD_TX}\"],\"id\":1}" \
+                ${EL_RPC})
+
+              echo "Receipt logs:"
+              echo "${RECEIPT}" | jq '.result.logs'
+              echo ""
+
+              # Filter for Transfer logs (topic[0] == keccak256("Transfer(address,address,uint256)"))
+              TRANSFER_LOGS=$(echo "${RECEIPT}" | jq \
+                --arg topic "${TRANSFER_TOPIC}" \
+                '[.result.logs[] | select(.topics[0] == $topic)]')
+              TRANSFER_LOG_COUNT=$(echo "${TRANSFER_LOGS}" | jq 'length')
+
+              echo "Transfer logs in receipt (filtered by topic): ${TRANSFER_LOG_COUNT}"
+
+              if [ "${TRANSFER_LOG_COUNT}" != "2" ]; then
+                echo "FAIL: Expected exactly 2 Transfer logs (EOA→Forwarder + Forwarder→recipient)."
+                echo "      Got: ${TRANSFER_LOG_COUNT}"
+                echo "  If 0: client does not implement EIP-7708 at all."
+                echo "  If 1: client emits the external tx Transfer log but misses the internal CALL one."
+                echo "        This is an EIP-7708 partial-implementation bug."
+                exit 1
+              fi
+
+              echo "PASS: Found ${TRANSFER_LOG_COUNT} Transfer logs in receipt."
+
+              # Verify log[0] is EOA -> Forwarder
+              LOG0_ADDR=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].address' | tr '[:upper:]' '[:lower:]')
+              LOG0_FROM=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].topics[1]' | tr '[:upper:]' '[:lower:]')  # 32-byte padded from
+              LOG0_TO=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].topics[2]' | tr '[:upper:]' '[:lower:]')    # 32-byte padded to
+              LOG0_DATA=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].data' | tr '[:upper:]' '[:lower:]')
+
+              TRANSFER_LOG_ADDR_LC=$(echo "${TRANSFER_LOG_ADDR}" | tr '[:upper:]' '[:lower:]')
+              WALLET_LC=$(echo "${WALLET_ADDRESS}" | tr '[:upper:]' '[:lower:]' | sed 's/0x//')
+              FORWARDER_LC=$(echo "${FORWARDER}" | tr '[:upper:]' '[:lower:]' | sed 's/0x//')
+
+              echo "Log[0] — expected: ${TRANSFER_LOG_ADDR_LC} Transfer(wallet→forwarder, 2 ETH)"
+              echo "  address: ${LOG0_ADDR}"
+              echo "  from:    ${LOG0_FROM}"
+              echo "  to:      ${LOG0_TO}"
+              echo "  data:    ${LOG0_DATA}"
+
+              if [ "${LOG0_ADDR}" != "${TRANSFER_LOG_ADDR_LC}" ]; then
+                echo "FAIL: Log[0] emitting address mismatch: expected ${TRANSFER_LOG_ADDR_LC}, got ${LOG0_ADDR}"
+                exit 1
+              fi
+              EXPECTED_LOG0_FROM="0x000000000000000000000000${WALLET_LC}"
+              EXPECTED_LOG0_TO="0x000000000000000000000000${FORWARDER_LC}"
+              if [ "${LOG0_FROM}" != "${EXPECTED_LOG0_FROM}" ]; then
+                echo "FAIL: Log[0] 'from' mismatch: expected ${EXPECTED_LOG0_FROM}, got ${LOG0_FROM}"
+                exit 1
+              fi
+              if [ "${LOG0_TO}" != "${EXPECTED_LOG0_TO}" ]; then
+                echo "FAIL: Log[0] 'to' mismatch: expected ${EXPECTED_LOG0_TO} (Forwarder), got ${LOG0_TO}"
+                exit 1
+              fi
+              echo "PASS: Log[0] correctly records external tx ETH move (wallet → Forwarder)"
+
+              # Verify log[1] is Forwarder -> Recipient (internal CALL)
+              LOG1_ADDR=$(echo "${TRANSFER_LOGS}" | jq -r '.[1].address' | tr '[:upper:]' '[:lower:]')
+              LOG1_FROM=$(echo "${TRANSFER_LOGS}" | jq -r '.[1].topics[1]' | tr '[:upper:]' '[:lower:]')
+              LOG1_TO=$(echo "${TRANSFER_LOGS}" | jq -r '.[1].topics[2]' | tr '[:upper:]' '[:lower:]')
+              LOG1_DATA=$(echo "${TRANSFER_LOGS}" | jq -r '.[1].data' | tr '[:upper:]' '[:lower:]')
+              RECIPIENT_LC=$(echo "${RECIPIENT}" | tr '[:upper:]' '[:lower:]' | sed 's/0x//')
+
+              echo ""
+              echo "Log[1] — expected: ${TRANSFER_LOG_ADDR_LC} Transfer(forwarder→recipient, 2 ETH) [internal CALL]"
+              echo "  address: ${LOG1_ADDR}"
+              echo "  from:    ${LOG1_FROM}"
+              echo "  to:      ${LOG1_TO}"
+              echo "  data:    ${LOG1_DATA}"
+
+              if [ "${LOG1_ADDR}" != "${TRANSFER_LOG_ADDR_LC}" ]; then
+                echo "FAIL: Log[1] emitting address mismatch: expected ${TRANSFER_LOG_ADDR_LC}, got ${LOG1_ADDR}"
+                exit 1
+              fi
+              EXPECTED_LOG1_FROM="0x000000000000000000000000${FORWARDER_LC}"
+              EXPECTED_LOG1_TO="0x000000000000000000000000${RECIPIENT_LC}"
+              if [ "${LOG1_FROM}" != "${EXPECTED_LOG1_FROM}" ]; then
+                echo "FAIL: Log[1] 'from' mismatch: expected ${EXPECTED_LOG1_FROM} (Forwarder), got ${LOG1_FROM}"
+                exit 1
+              fi
+              if [ "${LOG1_TO}" != "${EXPECTED_LOG1_TO}" ]; then
+                echo "FAIL: Log[1] 'to' mismatch: expected ${EXPECTED_LOG1_TO} (recipient), got ${LOG1_TO}"
+                exit 1
+              fi
+              echo "PASS: Log[1] correctly records internal CALL ETH move (Forwarder → recipient)"
+              echo ""
+              echo "PASS: Both Transfer logs present — EIP-7708 correctly instruments internal CALL transfers"
+              echo "::set-output internalTransferVerified true"
+
   # Final summary
   - name: run_shell
     title: "Print EIP-7708 test summary"
@@ -391,11 +614,17 @@ tasks:
         RECEIPT_VERIFIED: tasks.verifyReceiptLog.outputs.receiptLogVerified
         GETLOGS_VERIFIED: tasks.verifyGetLogs.outputs.getLogsVerified
         BLOCK_NUMBER: tasks.verifyReceiptLog.outputs.transferBlockNumber
+        FORWARDER_ADDR: tasks.deployAndCallForwarder.outputs.forwarderAddr
+        FORWARD_TX: tasks.deployAndCallForwarder.outputs.forwardTxHash
+        INTERNAL_VERIFIED: tasks.deployAndCallForwarder.outputs.internalTransferVerified
       command: |
         TRANSFER_TX_HASH=$(echo $TRANSFER_TX_HASH | jq -r)
         RECEIPT_VERIFIED=$(echo $RECEIPT_VERIFIED | jq -r)
         GETLOGS_VERIFIED=$(echo $GETLOGS_VERIFIED | jq -r)
         BLOCK_NUMBER=$(echo $BLOCK_NUMBER | jq -r)
+        FORWARDER_ADDR=$(echo $FORWARDER_ADDR | jq -r)
+        FORWARD_TX=$(echo $FORWARD_TX | jq -r)
+        INTERNAL_VERIFIED=$(echo $INTERNAL_VERIFIED | jq -r)
         echo "============================================================"
         echo "EIP-7708 ETH Transfer Log Emission Test Summary"
         echo "============================================================"
@@ -415,18 +644,30 @@ tasks:
         echo ""
         echo "Test 2: Zero-value ETH transfer emits no Transfer log"
         echo "  Status: PASS"
+        echo ""
+        echo "Test 3: Internal CALL-with-value emits Transfer log (not just external tx)"
+        echo "  Forwarder contract: ${FORWARDER_ADDR}"
+        echo "  Forward tx:         ${FORWARD_TX}"
+        echo "  Internal transfer verified: ${INTERNAL_VERIFIED}"
+        echo "  Status: PASS"
         echo "============================================================"
 
 cleanupTasks:
   - name: run_shell
-    title: "Cleanup foundry temp dir"
+    title: "Cleanup foundry and forwarder temp dirs"
     config:
       shell: bash
       envVars:
         FOUNDRY_HOME: tasks.installFoundry.outputs.foundryHome
+        WORK_DIR: tasks.deployAndCallForwarder.outputs.workDir
       command: |
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
         if [ ! -z "$FOUNDRY_HOME" ] && [ -d "$FOUNDRY_HOME" ]; then
           rm -rf "$FOUNDRY_HOME"
           echo "Cleaned up foundry temp dir ${FOUNDRY_HOME}"
+        fi
+        WORK_DIR=$(echo $WORK_DIR | jq -r)
+        if [ ! -z "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
+          rm -rf "$WORK_DIR"
+          echo "Cleaned up forwarder work dir ${WORK_DIR}"
         fi
