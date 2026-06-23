@@ -69,6 +69,10 @@ tasks:
 
         cd ${EELS_DIR}
         export HOME=${EELS_DIR}
+        # Pin Python 3.12: coincurve v20.0.0 has no wheel for Python 3.14 and
+        # the cmake C-compiler test fails in our cross-arch container environment.
+        # Python 3.12 has pre-built wheels for coincurve, skipping the cmake build.
+        uv python pin 3.12
         uv sync --all-extras
 
         echo "EELS environment ready at ${EELS_DIR}"
