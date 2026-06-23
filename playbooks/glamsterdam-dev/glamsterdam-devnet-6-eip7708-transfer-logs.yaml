@@ -1106,7 +1106,7 @@ tasks:
               BALANCE_ZERO_AFTER=$(cast balance ${ADDR_ZERO} --rpc-url ${EL_RPC} 2>/dev/null || echo "0")
               echo ""
               echo "address(0) balance after: ${BALANCE_ZERO_AFTER} wei"
-              EXPECTED_ZERO=$(echo "${BALANCE_ZERO_BEFORE} + ${FUND_WEI}" | bc)
+              EXPECTED_ZERO=$(python3 -c "print(${BALANCE_ZERO_BEFORE} + ${FUND_WEI})")
               if [ "${BALANCE_ZERO_AFTER}" != "${EXPECTED_ZERO}" ]; then
                 echo "FAIL: address(0) balance not increased by 0.5 ETH as expected by EIP-6780!"
                 echo "  Before: ${BALANCE_ZERO_BEFORE}"

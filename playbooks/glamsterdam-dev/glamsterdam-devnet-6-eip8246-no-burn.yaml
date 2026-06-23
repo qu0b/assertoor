@@ -242,7 +242,7 @@ tasks:
                 echo "FAIL: address(0) balance changed!"
                 echo "  BEFORE: ${ZERO_BEFORE} wei"
                 echo "  AFTER:  ${ZERO_AFTER} wei"
-                echo "  Delta:  $(echo "${ZERO_AFTER} - ${ZERO_BEFORE}" | bc) wei"
+                echo "  Delta:  $(python3 -c "print(${ZERO_AFTER} - ${ZERO_BEFORE})") wei"
                 echo "  EIP-8246 requires address(0) to remain unchanged after SELFDESTRUCT."
                 exit 1
               fi
@@ -252,7 +252,7 @@ tasks:
               # Assertion 2: beneficiary must have received exactly 0.5 ETH.
               # EXPECTED = BENEFICIARY_BEFORE + FUND_WEI
               # ----------------------------------------------------------------
-              EXPECTED_BENEFICIARY=$(echo "${BENEFICIARY_BEFORE} + ${FUND_WEI}" | bc)
+              EXPECTED_BENEFICIARY=$(python3 -c "print(${BENEFICIARY_BEFORE} + ${FUND_WEI})")
               if [ "${BENEFICIARY_AFTER}" != "${EXPECTED_BENEFICIARY}" ]; then
                 echo "FAIL: beneficiary balance mismatch!"
                 echo "  BEFORE:   ${BENEFICIARY_BEFORE} wei"
