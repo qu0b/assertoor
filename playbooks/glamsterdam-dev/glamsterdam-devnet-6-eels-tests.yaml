@@ -36,7 +36,12 @@ tasks:
         sudo apt-get update < /dev/null
         sudo apt-get install -y build-essential python3 python3-pip python3-dev libc6:amd64 autoconf automake libffi-dev libtool pkg-config < /dev/null
         sudo rm /usr/lib/python3*/EXTERNALLY-MANAGED 2>/dev/null || true
-        pip install uv
+        # Install uv system-wide so it is in /usr/local/bin/ regardless of $HOME.
+        # The upstream assertoor:latest does not inherit os.Environ(), leaving $HOME
+        # unset; a user-local `pip install uv` puts uv in $HOME/.local/bin which
+        # would not be found by bash --login sub-tasks (export PATH=$PATH:$HOME/.local/bin
+        # silently expands to "/.local/bin" when $HOME is empty).
+        sudo pip install uv
 
   # clone EELS repo
   - name: run_shell
@@ -60,9 +65,8 @@ tasks:
           --depth 1 --branch ${GIT_BRANCH} --single-branch ${EELS_DIR}
 
         cd ${EELS_DIR}
-        # Capture uv on PATH using the original $HOME (where pip --user installed it)
-        # BEFORE overriding HOME to isolate uv's cache to EELS_DIR.
-        export PATH=$PATH:$HOME/.local/bin
+        # Override HOME to isolate uv's cache into EELS_DIR instead of /home/assertoor.
+        # uv is installed system-wide (/usr/local/bin/uv) so no PATH tweak is needed.
         export HOME=${EELS_DIR}
         uv sync --all-extras
 
@@ -129,7 +133,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip2780_reduce_intrinsic_tx_gas \
@@ -177,7 +180,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip7708_eth_transfer_logs \
@@ -225,7 +227,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip7778_block_gas_accounting_without_refunds \
@@ -273,7 +274,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               # Skip test_slotnum_value: it asserts SLOTNUM == Environment(slot_number=N),
@@ -326,7 +326,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip7928_block_level_access_lists \
@@ -375,7 +374,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip7954_increase_max_contract_size \
@@ -423,7 +421,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip7976_increase_calldata_floor_cost \
@@ -471,7 +468,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip7981_increase_access_list_cost \
@@ -519,7 +515,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip7997_deterministic_factory_predeploy \
@@ -567,7 +562,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip8024_dupn_swapn_exchange \
@@ -615,7 +609,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               # EIP-8037 on tests-glamsterdam-devnet@v6.0.0 uses source-based refund routing
@@ -668,7 +661,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               uv run execute remote ./tests/amsterdam/eip8246_selfdestruct_no_burn \
@@ -716,7 +708,6 @@ tasks:
               PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
               cd ${EELS_DIR}
-              export PATH=$PATH:$HOME/.local/bin
               export HOME=${EELS_DIR}
 
               # Requires genesis-generator >= 6.1.0 to pre-deploy the builder

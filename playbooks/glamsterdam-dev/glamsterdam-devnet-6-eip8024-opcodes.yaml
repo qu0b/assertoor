@@ -43,7 +43,7 @@ tasks:
         sudo apt-get install -y build-essential python3 python3-pip python3-dev \
           libc6:amd64 autoconf automake libffi-dev libtool pkg-config < /dev/null
         sudo rm /usr/lib/python3*/EXTERNALLY-MANAGED 2>/dev/null || true
-        pip install uv
+        sudo pip install uv
 
   - name: run_shell
     title: "Clone EELS execution-specs (tag tests-glamsterdam-devnet@v6.0.0)"
@@ -68,7 +68,6 @@ tasks:
           --depth 1 --branch ${GIT_BRANCH} --single-branch ${EELS_DIR}
 
         cd ${EELS_DIR}
-        export PATH=$PATH:$HOME/.local/bin
         export HOME=${EELS_DIR}
         uv sync --all-extras
 
@@ -121,7 +120,6 @@ tasks:
         PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
         cd ${EELS_DIR}
-        export PATH=$PATH:$HOME/.local/bin
         export HOME=${EELS_DIR}
 
         echo "=== EIP-8024 SWAPN opcode tests ==="
@@ -176,7 +174,6 @@ tasks:
         PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
         cd ${EELS_DIR}
-        export PATH=$PATH:$HOME/.local/bin
         export HOME=${EELS_DIR}
 
         echo "=== EIP-8024 DUPN opcode tests ==="
@@ -229,7 +226,6 @@ tasks:
         PRIVATE_KEY=$(echo $PRIVATE_KEY | jq -r)
 
         cd ${EELS_DIR}
-        export PATH=$PATH:$HOME/.local/bin
         export HOME=${EELS_DIR}
 
         echo "=== EIP-8024 EXCHANGE opcode tests ==="
