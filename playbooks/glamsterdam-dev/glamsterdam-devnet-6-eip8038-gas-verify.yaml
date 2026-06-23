@@ -280,7 +280,7 @@ tasks:
               # Note: even though load() is declared view, eth_estimateGas will simulate it
               # and charge gas as if it were a real transaction.
 
-              LOAD_SELECTOR="0x27193a21"  # keccak256("load()") truncated to 4 bytes
+              LOAD_SELECTOR="0x86d5c4be"  # keccak256("load()") truncated to 4 bytes = 0x86d5c4be
 
               # Use eth_estimateGas for the load() call (treats slot as cold since new tx context)
               ESTIMATE_RESP=$(curl -s -X POST \
