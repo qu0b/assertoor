@@ -100,7 +100,8 @@ tasks:
             -H 'Content-Type: application/json' \
             -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"${BLOCK_HEX}\",false],\"id\":1}")
 
-          BAL_HASH=$(echo "${BLOCK_JSON}" | jq -r '.result.blockAccessListHash // "MISSING"')
+          # Accept both standard name (blockAccessListHash) and besu alias (balHash)
+          BAL_HASH=$(echo "${BLOCK_JSON}" | jq -r '(.result.blockAccessListHash // .result.balHash) // "MISSING"')
           TX_COUNT=$(echo "${BLOCK_JSON}" | jq '.result.transactions | length')
           GAS_USED=$(echo "${BLOCK_JSON}" | jq -r '.result.gasUsed // "0x0"')
 
