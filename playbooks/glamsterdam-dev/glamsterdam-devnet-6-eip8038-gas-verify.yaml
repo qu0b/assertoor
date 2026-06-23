@@ -363,10 +363,12 @@ tasks:
               echo ""
               echo "EIP-2780 does NOT change TX_BASE — a simple EOA-to-EOA transfer"
               echo "must still cost exactly 21000 gas."
+              echo ""
+              echo "Sending 1 wei to WALLET_ADDRESS (itself — guaranteed to exist, no NEWACCOUNT cost)."
+              echo "Using self-transfer avoids the 25000 gas NEWACCOUNT cost that would apply"
+              echo "when sending to a non-existent address like 0x000...dead."
 
-              RECIPIENT="0x000000000000000000000000000000000000dEaD"
-
-              TX_JSON=$(cast send ${RECIPIENT} \
+              TX_JSON=$(cast send ${WALLET_ADDRESS} \
                 --value 1wei \
                 --private-key ${WALLET_PRIVKEY} \
                 --rpc-url ${EL_RPC} \
@@ -390,24 +392,26 @@ tasks:
               echo "ETH transfer gasUsed: ${ETH_GAS}"
               echo "::set-output ethTransferGas ${ETH_GAS}"
 
-              # TX_BASE for a simple transfer to an existing (non-zero) address
-              # must be exactly 21000. We allow [21000, 22000] to handle any
-              # minor quirks (e.g., cold account access for 0xdead if not pre-warmed).
+              # TX_BASE for a simple transfer to a known-existing address must be exactly 21000.
+              # Per EIP-2929: tx.from and tx.to are pre-warmed (no COLD_ACCOUNT_ACCESS_COST).
+              # Sending to an already-existing address: no NEWACCOUNT cost (25000 gas).
+              # Using a self-transfer ensures the recipient exists. Expected: exactly 21000.
               if [ "${ETH_GAS}" -lt 21000 ]; then
                 echo "FAIL: ETH transfer gasUsed=${ETH_GAS} is below TX_BASE (21000)."
                 echo "      TX_BASE cannot be reduced by any Amsterdam EIP."
                 exit 1
               fi
 
-              if [ "${ETH_GAS}" -gt 22000 ]; then
-                echo "FAIL: ETH transfer gasUsed=${ETH_GAS} exceeds expected 22000."
-                echo "      A simple EOA transfer should cost 21000 (TX_BASE)."
-                echo "      Excess above 21000 indicates unexpected gas charges."
+              if [ "${ETH_GAS}" -gt 21100 ]; then
+                echo "FAIL: ETH transfer gasUsed=${ETH_GAS} exceeds 21100."
+                echo "      A self-transfer to an existing account must cost exactly 21000 (TX_BASE)."
+                echo "      Values above 21100 indicate NEWACCOUNT cost (recipient didn't exist)"
+                echo "      or unexpected gas charges."
                 exit 1
               fi
 
-              echo "PASS: ETH transfer gasUsed=${ETH_GAS} is in expected range [21000, 22000]."
-              echo "      EIP-2780 TX_BASE=21000 is correct."
+              echo "PASS: ETH transfer gasUsed=${ETH_GAS} matches TX_BASE=21000."
+              echo "      EIP-2780 TX_BASE=21000 is correct (no calldata, no new account)."
 
   # Final summary
   - name: run_shell
