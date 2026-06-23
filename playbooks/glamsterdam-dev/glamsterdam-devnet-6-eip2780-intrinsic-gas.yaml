@@ -182,8 +182,9 @@ tasks:
         export HOME=${FOUNDRY_HOME}
 
         echo "=== Test 2: Tx with 100 zero calldata bytes ==="
-        echo "Expected: estimate ≈ 27400 (EIP-7976 floor: 21000 + 64×100)"
-        echo "  Note: EIP-2780 model would give 21400, but EIP-7976 floor dominates."
+        echo "Expected: estimate ≈ 27400 (EIP-7976 floor: 21000 + 100 × 64)"
+        echo "  Note: EIP-2780 model gives 21400 (100×4 zero bytes), floor dominates."
+        echo "  eth_estimateGas may overshoot floor by up to 1.5% → up to ~27810."
         echo ""
 
         # 100 zero bytes = "0x" + "00" × 100
@@ -214,21 +215,22 @@ tasks:
         echo "::set-output zeroBytesEstimate ${ESTIMATE}"
 
         # EIP-7976 floor: 21000 + 64×100 = 27400 (dominates over EIP-2780's 21400)
-        # Allow ±100 for client implementation differences
-        EXPECTED=27400
-        LOWER=$((EXPECTED - 100))
-        UPPER=$((EXPECTED + 100))
+        # eth_estimateGas binary-search may overshoot floor by up to 1.5% (~27810).
+        # The actual on-chain receipt.gasUsed would be exactly 27400.
+        FLOOR=27400
+        LOWER=$((FLOOR - 200))
+        UPPER=$((FLOOR + 600))
 
         if [ "${ESTIMATE}" -ge "${LOWER}" ] && [ "${ESTIMATE}" -le "${UPPER}" ]; then
-          echo "PASS: Estimate ${ESTIMATE} ≈ ${EXPECTED} gas (EIP-7976 floor: 21000 + 64×100). ✓"
-          echo "      Confirms: EIP-7976 floor is active and dominates EIP-2780 model (21400)."
+          echo "PASS: Estimate ${ESTIMATE} in floor range [${LOWER}, ${UPPER}]. ✓"
+          echo "      EIP-7976 floor (21000 + 64×100 = 27400) is active and dominates EIP-2780 model (21400)."
         elif [ "${ESTIMATE}" -ge 21300 ] && [ "${ESTIMATE}" -le 21500 ]; then
-          echo "FAIL: Estimate ${ESTIMATE} ≈ 21400 — looks like EIP-7976 floor is NOT active!"
+          echo "FAIL: Estimate ${ESTIMATE} ≈ 21400 — EIP-7976 floor is NOT active!"
           echo "      EIP-2780 model gives 21400, but Amsterdam requires EIP-7976 floor (27400)."
           exit 1
         else
-          echo "FAIL: Estimate ${ESTIMATE}, expected ≈ ${EXPECTED} (EIP-7976 floor)."
-          echo "      Neither EIP-2780 model (21400) nor floor (27400) was returned."
+          echo "FAIL: Estimate ${ESTIMATE}, expected in floor range [${LOWER}, ${UPPER}]."
+          echo "      Neither EIP-2780 model (~21400) nor floor range (~27400-27810) was matched."
           exit 1
         fi
 
@@ -257,8 +259,9 @@ tasks:
         export HOME=${FOUNDRY_HOME}
 
         echo "=== Test 3: Tx with 100 non-zero calldata bytes ==="
-        echo "Expected: estimate ≈ 27400 (EIP-7976 floor: 21000 + 64×100)"
-        echo "  Note: EIP-2780 model would give 22600, but EIP-7976 floor dominates."
+        echo "Expected: estimate ≈ 27400 (EIP-7976 floor: 21000 + 100 × 64)"
+        echo "  Note: EIP-2780 model gives 22600 (100×16 nonzero bytes), floor dominates."
+        echo "  eth_estimateGas may overshoot floor by up to 1.5% → up to ~27810."
         echo ""
 
         # 100 non-zero bytes = 0xff × 100
@@ -288,21 +291,21 @@ tasks:
         echo "::set-output nonzeroBytesEstimate ${ESTIMATE}"
 
         # EIP-7976 floor: 21000 + 64×100 = 27400 (dominates over EIP-2780's 22600)
-        # Allow ±100 for client implementation differences
-        EXPECTED=27400
-        LOWER=$((EXPECTED - 100))
-        UPPER=$((EXPECTED + 100))
+        # eth_estimateGas binary-search may overshoot floor by up to 1.5% (~27810).
+        FLOOR=27400
+        LOWER=$((FLOOR - 200))
+        UPPER=$((FLOOR + 600))
 
         if [ "${ESTIMATE}" -ge "${LOWER}" ] && [ "${ESTIMATE}" -le "${UPPER}" ]; then
-          echo "PASS: Estimate ${ESTIMATE} ≈ ${EXPECTED} gas (EIP-7976 floor: 21000 + 64×100). ✓"
-          echo "      Confirms: EIP-7976 floor is active and dominates EIP-2780 model (22600)."
+          echo "PASS: Estimate ${ESTIMATE} in floor range [${LOWER}, ${UPPER}]. ✓"
+          echo "      EIP-7976 floor (21000 + 64×100 = 27400) is active and dominates EIP-2780 model (22600)."
         elif [ "${ESTIMATE}" -ge 22500 ] && [ "${ESTIMATE}" -le 22700 ]; then
-          echo "FAIL: Estimate ${ESTIMATE} ≈ 22600 — looks like EIP-7976 floor is NOT active!"
+          echo "FAIL: Estimate ${ESTIMATE} ≈ 22600 — EIP-7976 floor is NOT active!"
           echo "      EIP-2780 model gives 22600, but Amsterdam requires EIP-7976 floor (27400)."
           exit 1
         else
-          echo "FAIL: Estimate ${ESTIMATE}, expected ≈ ${EXPECTED} (EIP-7976 floor)."
-          echo "      Neither EIP-2780 model (22600) nor floor (27400) was returned."
+          echo "FAIL: Estimate ${ESTIMATE}, expected in floor range [${LOWER}, ${UPPER}]."
+          echo "      Neither EIP-2780 model (~22600) nor floor range (~27400-27810) was matched."
           exit 1
         fi
 
@@ -337,10 +340,11 @@ tasks:
         echo "  Same length (100 bytes) → same floor → same estimate for zero and nonzero."
         echo "  Note: EIP-2780 4/16 gas/byte distinction is hidden behind the floor."
 
-        # In Amsterdam, EIP-7976 floor dominates for any calldata, and the floor is
-        # purely length-based. Both 100-zero and 100-nonzero should give the same estimate.
-        # Allow ±50 for minor implementation variations.
-        if [ "${DELTA}" -ge -50 ] && [ "${DELTA}" -le 50 ]; then
+        # In Amsterdam, EIP-7976 floor dominates for any calldata (64 gas/byte × length).
+        # Floor is purely length-based: same length → same floor → same estimate.
+        # Both estimates may overshoot by up to 1.5% but should be equal (same binary search path).
+        # Allow ±150 for minor path divergence.
+        if [ "${DELTA}" -ge -150 ] && [ "${DELTA}" -le 150 ]; then
           echo "PASS: Delta ${DELTA} ≈ 0 gas. ✓"
           echo "      EIP-7976 floor correctly treats zero and non-zero bytes equally."
           echo "      The EIP-2780 per-byte distinction (4 vs 16) is subsumed by the floor."

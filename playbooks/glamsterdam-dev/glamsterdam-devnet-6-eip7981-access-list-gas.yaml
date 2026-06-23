@@ -6,26 +6,33 @@ config:
   # EIP-7981: Reduces the intrinsic gas cost for each storage key in an EIP-2930
   # access list from 2400 to 1900.
   #
-  # The address entry cost (2400) is UNCHANGED. Only storage keys are cheaper.
+  # In Amsterdam, EIP-7981 also extends EIP-7976 calldata floor pricing to access
+  # list entries. Access list bytes are treated as non-zero calldata tokens and
+  # charged as a floor in IntrinsicGas IN ADDITION to the base access list cost:
+  #   address floor = 20 bytes × 4 tokens/byte × 16 gas/token = 1280 gas/addr
+  #   key floor     = 32 bytes × 4 tokens/byte × 16 gas/token = 2048 gas/key
   #
-  # Full intrinsic gas formula for an access list tx:
-  #   TX_BASE                                         = 21000
-  #   ACCESS_LIST_ADDRESS_COST per address            = 2400   (unchanged)
-  #   ACCESS_LIST_STORAGE_KEY_COST per storage key    = 1900   (Prague: 2400)
-  #   TX_DATA_ZERO per zero calldata byte             = 4
-  #   TX_DATA_NONZERO per non-zero calldata byte      = 16
+  # Full Amsterdam intrinsic gas for an access list tx:
+  #   TX_BASE                                              = 21000
+  #   ACCESS_LIST_ADDRESS_COST per address (base)          = 2400
+  #   ACCESS_LIST_ADDRESS_FLOOR per address (EIP-7981)     = 1280
+  #   ACCESS_LIST_STORAGE_KEY_COST per key (base, EIP-7981)= 1900  (Prague: 2400)
+  #   ACCESS_LIST_STORAGE_KEY_FLOOR per key (EIP-7981)     = 2048
   #
   # Test strategy:
   #   Use eth_estimateGas on a type-1 (access list) transaction containing
   #   1 address + 100 storage keys, with no calldata and no execution (value=0
   #   to an EOA with no code).
   #
-  #   Expected gas estimate:
-  #     Amsterdam: 21000 + 2400 + 100 × 1900 = 213400
-  #     Prague:    21000 + 2400 + 100 × 2400 = 263400
+  #   Expected gas (Amsterdam exact intrinsic):
+  #     21000 + (2400+1280)×1 + (1900+2048)×100 = 419480
+  #   eth_estimateGas may overshoot by up to 1.5% (binary search error ratio)
   #
-  #   If estimate is in [210000, 240000] → Amsterdam ✓
-  #   If estimate is in [255000, 275000] → Prague (EIP-7981 not applied) ✗
+  #   Expected gas (Prague, no floor added to intrinsic):
+  #     21000 + 2400×1 + 2400×100 = 263400
+  #
+  #   If estimate is in [415000, 430000] → Amsterdam ✓
+  #   If estimate is in [255000, 275000] → Prague (EIP-7981/floor not applied) ✗
   #
   # A separate on-chain test sends an actual type-1 tx and verifies the
   # gas_used from the receipt is in the Amsterdam range.
@@ -65,8 +72,9 @@ tasks:
         echo "RPC: ${EL_RPC}"
         echo ""
         echo "Building access list: 1 address + 100 storage keys"
-        echo "  Amsterdam: 21000 + 2400 + 100 × 1900 = 213400 gas"
-        echo "  Prague:    21000 + 2400 + 100 × 2400 = 263400 gas"
+        echo "  Amsterdam: 21000 + (2400+1280)×1 + (1900+2048)×100 = 419480 gas (intrinsic)"
+        echo "             eth_estimateGas may return up to ~1.5% higher (~424000)"
+        echo "  Prague:    21000 + 2400×1 + 2400×100 = 263400 gas"
         echo ""
 
         # Build the access list JSON: one address (dead), 100 storage keys 0x000...00 through 0x000...63
@@ -119,22 +127,22 @@ tasks:
 
         echo ""
         echo "Comparing against expected ranges:"
-        echo "  Amsterdam (1900/key): expected ≈ 213400 gas"
-        echo "  Prague    (2400/key): expected ≈ 263400 gas"
+        echo "  Amsterdam: intrinsic=419480, estimate ≤1.5% over → [415000, 430000]"
+        echo "  Prague:    intrinsic=263400                       → [255000, 275000]"
         echo ""
 
-        # Amsterdam range: [210000, 240000]
-        # Prague range:    [255000, 275000]
-        if [ "${ESTIMATE}" -ge 210000 ] && [ "${ESTIMATE}" -le 240000 ]; then
-          echo "PASS: Gas estimate ${ESTIMATE} is in Amsterdam range [210000, 240000]."
-          echo "      Storage key cost is ~1900 (EIP-7981 active). ✓"
+        # Amsterdam: intrinsic = 419480, eth_estimateGas adds ≤1.5% overshoot
+        # Prague:    intrinsic = 263400 (base only, no floor in intrinsic)
+        if [ "${ESTIMATE}" -ge 415000 ] && [ "${ESTIMATE}" -le 430000 ]; then
+          echo "PASS: Gas estimate ${ESTIMATE} is in Amsterdam range [415000, 430000]."
+          echo "      EIP-7981 base (1900/key) + floor (2048/key) active. ✓"
         elif [ "${ESTIMATE}" -ge 255000 ] && [ "${ESTIMATE}" -le 275000 ]; then
           echo "FAIL: Gas estimate ${ESTIMATE} is in Prague range [255000, 275000]."
-          echo "      Storage key cost is ~2400 (EIP-7981 NOT applied). ✗"
+          echo "      Storage key cost is ~2400 with no floor (EIP-7981 NOT applied). ✗"
           exit 1
         else
           echo "WARN: Gas estimate ${ESTIMATE} is outside both expected ranges."
-          echo "      Amsterdam expected: [210000, 240000]"
+          echo "      Amsterdam expected: [415000, 430000]"
           echo "      Prague expected:    [255000, 275000]"
           echo "      Investigate: is this client computing access list cost correctly?"
           exit 1
@@ -201,21 +209,20 @@ tasks:
         echo "RPC:    ${EL_RPC}"
         echo ""
 
-        # Build access list with 50 storage keys for the sender's own address.
-        # Using the sender address guarantees the storage keys have a well-known context.
-        # 50 keys is enough to produce a measurable difference (50×500 = 25000 gas).
-        # Expected gas with 50 keys:
-        #   Amsterdam: 21000 + 2400 + 50 × 1900 = 116400
-        #   Prague:    21000 + 2400 + 50 × 2400 = 143400
+        # Build access list with 50 storage keys for 0x000...dead (the destination).
+        # 50 keys is enough to produce a measurable difference between Amsterdam/Prague.
+        # Expected gas with 1 addr + 50 keys:
+        #   Amsterdam: 21000 + (2400+1280)×1 + (1900+2048)×50 = 222080 (exact receipt)
+        #   Prague:    21000 + 2400×1 + 2400×50 = 143400
 
         STORAGE_KEYS=$(python3 -c "
         keys = ['0x%064x' % i for i in range(50)]
         print(' '.join(['\"' + k + '\"' for k in keys]))
         " | tr ' ' ',')
 
-        echo "Sending type-1 tx: 50 storage keys for ${WALLET_ADDRESS}"
-        echo "  Expected gas (Amsterdam, 1900/key): ~116400"
-        echo "  Expected gas (Prague,    2400/key): ~143400"
+        echo "Sending type-1 tx: 1 addr + 50 storage keys"
+        echo "  Expected gas (Amsterdam, 1900+2048/key + floor): ~222080"
+        echo "  Expected gas (Prague,    2400/key base only):    ~143400"
         echo ""
 
         # cast send with access list: --access-list "addr:key1,key2"
@@ -263,21 +270,20 @@ tasks:
           exit 1
         fi
 
-        # Check gas_used is in Amsterdam range (50 keys)
-        # Amsterdam: 21000 + 2400 + 50×1900 = 116400
-        # Prague:    21000 + 2400 + 50×2400 = 143400
-        # Allow +5000 for measurement noise
-        LOWER_AMSTERDAM=113000
-        UPPER_AMSTERDAM=125000
+        # Check gas_used is in Amsterdam range (1 addr + 50 keys)
+        # Amsterdam: 21000 + (2400+1280)×1 + (1900+2048)×50 = 222080 (exact)
+        # Prague:    21000 + 2400×1 + 2400×50 = 143400
+        LOWER_AMSTERDAM=219000
+        UPPER_AMSTERDAM=226000
         LOWER_PRAGUE=138000
-        UPPER_PRAGUE=155000
+        UPPER_PRAGUE=150000
 
         if [ "${GAS_USED_DEC}" -ge "${LOWER_AMSTERDAM}" ] && [ "${GAS_USED_DEC}" -le "${UPPER_AMSTERDAM}" ]; then
           echo "PASS: gas_used ${GAS_USED_DEC} in Amsterdam range [${LOWER_AMSTERDAM}, ${UPPER_AMSTERDAM}]."
-          echo "      Storage key cost ~1900 (EIP-7981 active). ✓"
+          echo "      EIP-7981 base (1900/key) + floor (2048/key) active. ✓"
         elif [ "${GAS_USED_DEC}" -ge "${LOWER_PRAGUE}" ] && [ "${GAS_USED_DEC}" -le "${UPPER_PRAGUE}" ]; then
           echo "FAIL: gas_used ${GAS_USED_DEC} in Prague range [${LOWER_PRAGUE}, ${UPPER_PRAGUE}]."
-          echo "      Storage key cost ~2400 (EIP-7981 NOT applied). ✗"
+          echo "      Storage key cost ~2400 with no floor (EIP-7981 NOT applied). ✗"
           exit 1
         else
           echo "WARN: gas_used ${GAS_USED_DEC} outside both expected ranges."
@@ -305,18 +311,20 @@ tasks:
         echo "EIP-7981 specification:"
         echo "  ACCESS_LIST_STORAGE_KEY_COST: 2400 (Prague) → 1900 (Amsterdam)"
         echo "  ACCESS_LIST_ADDRESS_COST: 2400 (unchanged)"
-        echo "  TX_BASE: 21000 (unchanged)"
+        echo "  EIP-7981 in Amsterdam also adds floor gas per entry (EIP-7976 extension):"
+        echo "    address floor = 20 × 4 tokens × 16 gas = 1280 gas/addr"
+        echo "    key floor     = 32 × 4 tokens × 16 gas = 2048 gas/key"
         echo ""
-        echo "Test 1 (eth_estimateGas, 100 storage keys):"
+        echo "Test 1 (eth_estimateGas, 1 addr + 100 storage keys):"
         echo "  Gas estimate:  ${ESTIMATE_GAS}"
-        echo "  Expected (Amsterdam 1900/key): ~213400"
-        echo "  Expected (Prague    2400/key): ~263400"
+        echo "  Expected (Amsterdam): ~419480 intrinsic, ~424000 estimate (≤1.5% over)"
+        echo "  Expected (Prague):    ~263400"
         echo "  Status: PASS"
         echo ""
-        echo "Test 2 (on-chain type-1 tx, 50 storage keys):"
+        echo "Test 2 (on-chain type-1 tx, 1 addr + 50 storage keys):"
         echo "  Gas used:      ${ON_CHAIN_GAS}"
-        echo "  Expected (Amsterdam 1900/key): ~116400"
-        echo "  Expected (Prague    2400/key): ~143400"
+        echo "  Expected (Amsterdam): ~222080 (exact receipt)"
+        echo "  Expected (Prague):    ~143400"
         echo "  Status: PASS"
         echo "================================================================"
 
