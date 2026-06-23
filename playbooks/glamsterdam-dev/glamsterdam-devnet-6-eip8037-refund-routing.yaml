@@ -23,24 +23,26 @@ config:
   #
   # Test approach (within-tx create+clear to trigger RefundState):
   #   1. Deploy a StorageWriter contract with setAndClear(n) that:
-  #         - sets n slots from 0 → 1  (charges n × 97920 state gas)
-  #         - immediately clears them back 1 → 0  (RefundState n × 97920)
-  #      The net state gas cost is 0 but the SENDER receives the state gas refund
-  #      as leftover gasLeft × gasPrice.
-  #   2. Record sender balance BEFORE calling setAndClear(8).
-  #   3. Call setAndClear(8) and capture gasUsed + effectiveGasPrice from the receipt.
-  #   4. Compute:
-  #        expected_cost_no_refund = gasUsed × effectiveGasPrice
-  #        actual_cost             = balance_before - balance_after
-  #        refund_received         = expected_cost_no_refund - actual_cost
-  #   5. Assert refund_received > 0 (state gas refund credited to sender).
-  #   6. Assert refund_received ≈ 8 × 97920 × effectiveGasPrice (within 50% tolerance).
+  #         - sets n slots from 0 → 1  (ChargeState: n × 97920 state gas spills to regular)
+  #         - immediately clears them back 1 → 0  (RefundState: n × 97920 added to StateGas)
+  #      After the first slot, RefundState builds a state reservoir that absorbs subsequent
+  #      slot charges without further regular-gas spillover.
+  #      Net effect: only 1 slot's worth (97920) of state gas spills to regular gas total.
+  #   2. Call setAndClear(8) and check receipt.gasUsed.
+  #   3. Assert gasUsed is in the "RefundState active" range:
+  #        With EIP-8037:    gasUsed ≈ 300000-500000  (only 1 spillover of 97920)
+  #        Without EIP-8037: gasUsed ≈ 900000-1100000 (all 8 spillovers = 783360 extra gas)
+  #      The two cases are easily distinguished — a ~3× difference in gasUsed.
   #
   # Why setAndClear in one tx?
   #   If set() and clear() are separate txs, the second tx sees original=1 (not 0),
   #   hitting case 2.1.2b (capped EVM refund, 4800/slot) NOT case 2.2.2.1 (RefundState).
   #   Only when original==value==0 (restored to original zero within same tx) does
   #   geth call RefundState and bypass the 1/5 cap.
+  #
+  # Note on balance accounting: RefundState increases gasLeft (not the EVM refund counter),
+  # so receipt.gasUsed ALREADY reflects the refund. The sender saves via lower gasUsed,
+  # not via a separate balance credit beyond the gasLeft return.
 
 tasks:
   - name: check_clients_are_healthy
@@ -97,9 +99,9 @@ tasks:
   # Generate a funded deployer wallet
   - name: generate_child_wallet
     id: deployerWallet
-    title: "Generate funded deployer wallet (2 ETH)"
+    title: "Generate funded deployer wallet (5 ETH)"
     config:
-      prefundMinBalance: 2000000000000000000  # 2 ETH
+      prefundMinBalance: 5000000000000000000  # 5 ETH (enough for forge deploy + setAndClear)
       walletSeed: "eip8037-refund-routing-test"
     configVars:
       privateKey: "walletPrivkey"
@@ -191,22 +193,16 @@ tasks:
         S0=$(cast call ${CONTRACT} "s0()(uint256)" --rpc-url ${EL_RPC_HOST})
         echo "s0 before setAndClear(): ${S0} (expected: 0)"
 
-        # Record sender balance BEFORE setAndClear(8)
-        BALANCE_BEFORE=$(cast balance ${WALLET_ADDRESS} --rpc-url ${EL_RPC_HOST})
-        echo ""
-        echo "Sender balance BEFORE setAndClear(8): ${BALANCE_BEFORE} wei"
-        echo "::set-output balanceBefore ${BALANCE_BEFORE}"
-
         # Call setAndClear(8) — creates and clears 8 slots in ONE transaction.
-        # Under EIP-8037, each slot triggers RefundState(97920), returning 8*97920=783360
-        # state gas directly to gasLeft without the EIP-3529 1/5 cap.
+        # Under EIP-8037, RefundState(97920) is called for each 1→0 restore within same tx.
+        # This adds to gasLeft (StateGas), enabling subsequent slots to use the reservoir.
+        # Net: only 1 slot's state gas (97920) spills to regular gas; 7 slots use the refund.
         echo ""
         echo "Calling setAndClear(8) — creates+clears 8 slots in ONE tx..."
         SC_JSON=$(cast send ${CONTRACT} \
           "setAndClear(uint256)" "8" \
           --private-key ${WALLET_PRIVKEY} \
           --rpc-url ${EL_RPC_HOST} \
-          --gas 2000000 \
           --legacy \
           --json)
         SC_TX=$(echo "${SC_JSON}" | jq -r '.transactionHash')
@@ -227,80 +223,63 @@ tasks:
           exit 1
         fi
 
-        # Record sender balance AFTER setAndClear(8)
-        BALANCE_AFTER=$(cast balance ${WALLET_ADDRESS} --rpc-url ${EL_RPC_HOST})
-        echo ""
-        echo "Sender balance AFTER setAndClear(8): ${BALANCE_AFTER} wei"
-        echo "::set-output balanceAfter ${BALANCE_AFTER}"
-
         # ----------------------------------------------------------------
-        # Verify EIP-8037 state gas refund:
-        #   expected_cost_no_refund = GAS_USED × GAS_PRICE
-        #   actual_cost             = BALANCE_BEFORE − BALANCE_AFTER
-        #   refund_received         = expected_cost_no_refund − actual_cost
+        # Verify EIP-8037 RefundState is active via gasUsed comparison.
         #
-        # Under EIP-8037:
-        #   State gas charged: 8 × 97920 = 783360 (for 8 slot creates)
-        #   State gas refunded: 8 × 97920 = 783360 (for 8 same-tx clears, no cap)
-        #   Net state gas cost: 0
-        #   But the state gas refund increases gasLeft BEFORE the receipt gasUsed
-        #   is written, so gasUsed does NOT include the state gas.
-        #   Hence: actual_cost = (GAS_USED − 783360) × GAS_PRICE
-        #   and:  refund_received = GAS_USED × GAS_PRICE − actual_cost = 783360 × GAS_PRICE
+        # EIP-8037 active (RefundState builds state reservoir):
+        #   Only the FIRST slot spills 97920 to regular gas.
+        #   Subsequent slots charge from the RefundState reservoir (StateGas).
+        #   Expected gasUsed: 200000–550000
+        #
+        # EIP-8037 NOT active (no RefundState, all 8 spill to regular):
+        #   8 × 97920 = 783360 extra regular gas consumed.
+        #   Expected gasUsed: 900000–1200000
+        #
+        # The two cases differ by ~3×, making them unambiguously distinguishable.
         # ----------------------------------------------------------------
         python3 - << PYEOF
         gas_used   = int("${GAS_USED}", 16) if "${GAS_USED}".startswith("0x") else int("${GAS_USED}")
         gas_price  = int("${GAS_PRICE}", 16) if "${GAS_PRICE}".startswith("0x") else int("${GAS_PRICE}")
-        bal_before = int("${BALANCE_BEFORE}")
-        bal_after  = int("${BALANCE_AFTER}")
 
-        expected_cost_no_refund = gas_used * gas_price
-        actual_cost             = bal_before - bal_after
-        refund_received         = expected_cost_no_refund - actual_cost
+        N_SLOTS         = 8
+        REFUND_PER_SLOT = 64 * 1530   # 97920: COST_PER_STATE_BYTE × StorageCreationSize
 
-        # EIP-8037: COST_PER_STATE_BYTE=1530, StorageCreationSize=64
-        # RefundState per slot = 64 × 1530 = 97920 state gas
-        N_SLOTS             = 8
-        REFUND_PER_SLOT     = 64 * 1530   # = 97920
-        expected_refund_gas = N_SLOTS * REFUND_PER_SLOT   # = 783360
-        expected_refund_wei = expected_refund_gas * gas_price
+        # EIP-8037 active: only 1 spillover of 97920 to regular gas.
+        # Regular ops for 8 set+clear ≈ 8 × (22100 + 3000) + intrinsic ~25000 = ~226800
+        # Plus 1 spillover: 97920. Total ≈ 324720. Allow 2× margin.
+        EIP8037_LOWER = 150_000
+        EIP8037_UPPER = 600_000
 
-        print(f"")
-        print(f"=== EIP-8037 State Gas Refund Analysis (setAndClear — within-tx create+clear) ===")
-        print(f"gasUsed (from receipt):            {gas_used}  (regular gas, state gas refund credited separately)")
-        print(f"effectiveGasPrice:                 {gas_price} wei")
-        print(f"balance before setAndClear():      {bal_before} wei")
-        print(f"balance after  setAndClear():      {bal_after} wei")
-        print(f"expected cost (no state refund):   {expected_cost_no_refund} wei  (gasUsed × gasPrice)")
-        print(f"actual cost:                       {actual_cost} wei")
-        print(f"refund received by sender:         {refund_received} wei")
-        print(f"")
-        print(f"Expected state gas refund ({N_SLOTS} slots × {REFUND_PER_SLOT}): {expected_refund_gas} gas = {expected_refund_wei} wei")
+        # EIP-8037 NOT active: all 8 spills → 783360 extra + regular ops ≈ 1010160
+        NO_EIP8037_LOWER = 750_000
 
-        # Assertion 1: sender received SOME refund > 0 (state gas credited to sender)
-        if actual_cost >= expected_cost_no_refund:
+        print("")
+        print("=== EIP-8037 State Gas Refund Analysis (within-tx create+clear) ===")
+        print(f"gasUsed from receipt:    {gas_used:,}")
+        print(f"effectiveGasPrice:       {gas_price:,} wei")
+        print("")
+        print(f"EIP-8037 active range:   [{EIP8037_LOWER:,}, {EIP8037_UPPER:,}]")
+        print(f"  → only 1 state-gas spillover ({REFUND_PER_SLOT:,}) to regular gas")
+        print(f"  → 7 subsequent slots charge from RefundState reservoir (StateGas)")
+        print(f"No EIP-8037 range:       [{NO_EIP8037_LOWER:,}, ~1200000]")
+        print(f"  → all {N_SLOTS} slots spill state gas to regular ({N_SLOTS} × {REFUND_PER_SLOT:,} = {N_SLOTS * REFUND_PER_SLOT:,})")
+
+        if EIP8037_LOWER <= gas_used <= EIP8037_UPPER:
             print(f"")
-            print(f"FAIL: No source-based state gas refund detected!")
-            print(f"  actual_cost ({actual_cost}) >= expected_cost_no_refund ({expected_cost_no_refund})")
-            print(f"  Under EIP-8037, within-tx create+clear (0→x→0) should RefundState(97920/slot).")
-            print(f"  If no refund: client may not implement EIP-8037 RefundState for case 2.2.2.1.")
+            print(f"PASS: gasUsed {gas_used:,} is in EIP-8037 active range [{EIP8037_LOWER:,}, {EIP8037_UPPER:,}].")
+            print(f"      RefundState (0→x→0 within-tx) is reducing state-gas spillover. ✓")
+        elif gas_used >= NO_EIP8037_LOWER:
+            print(f"")
+            print(f"FAIL: gasUsed {gas_used:,} is in the no-EIP-8037 range (>= {NO_EIP8037_LOWER:,}).")
+            print(f"      All {N_SLOTS} slots appear to have spilled state gas to regular gas.")
+            print(f"      EIP-8037 RefundState for case 2.2.2.1 (0→x→0 within-tx) is NOT active. ✗")
             exit(1)
-        print(f"PASS: Refund received by sender: {refund_received} wei > 0")
-
-        # Assertion 2: refund magnitude is in expected range (within 50% tolerance)
-        # Allow 50% tolerance: state gas accounting can vary by client implementation
-        lower = expected_refund_wei * 50 // 100
-        upper = expected_refund_wei * 200 // 100
-        if lower <= refund_received <= upper:
-            pct = refund_received * 100 // expected_refund_wei if expected_refund_wei else 0
-            print(f"PASS: Refund magnitude {refund_received} wei is within expected range")
-            print(f"      ({lower}–{upper} wei, 50%–200% of expected {expected_refund_wei} wei)")
-            print(f"      Actual ≈ {pct}% of expected ({N_SLOTS} × {REFUND_PER_SLOT} × {gas_price} wei/gas)")
         else:
-            print(f"WARN: Refund magnitude {refund_received} wei is OUTSIDE expected range")
-            print(f"      Expected: {expected_refund_wei} wei ({N_SLOTS} × {REFUND_PER_SLOT} × {gas_price})")
-            print(f"      Range:    {lower}–{upper} wei (50%–200%)")
-            print(f"      Continuing (directional assertion passed).")
+            print(f"WARN: gasUsed {gas_used:,} is outside both expected ranges.")
+            print(f"      EIP-8037 range: [{EIP8037_LOWER:,}, {EIP8037_UPPER:,}]")
+            print(f"      No-EIP-8037:    [>= {NO_EIP8037_LOWER:,}]")
+            print(f"      Investigate SSTORE gas costs in Amsterdam for this client.")
+            exit(1)
         PYEOF
 
   # Final summary
@@ -314,15 +293,13 @@ tasks:
         SC_TX: tasks.testRefundRouting.outputs.setAndClearTx
         GAS_USED: tasks.testRefundRouting.outputs.gasUsed
         GAS_PRICE: tasks.testRefundRouting.outputs.gasPrice
-        BAL_BEFORE: tasks.testRefundRouting.outputs.balanceBefore
-        BAL_AFTER: tasks.testRefundRouting.outputs.balanceAfter
       command: |
         CONTRACT=$(echo $CONTRACT | jq -r)
         SC_TX=$(echo $SC_TX | jq -r)
         GAS_USED=$(echo $GAS_USED | jq -r)
         GAS_PRICE=$(echo $GAS_PRICE | jq -r)
-        BAL_BEFORE=$(echo $BAL_BEFORE | jq -r)
-        BAL_AFTER=$(echo $BAL_AFTER | jq -r)
+
+        GAS_USED_DEC=$(python3 -c "v='${GAS_USED}'; print(int(v,16) if v.startswith('0x') else int(v))")
 
         echo "================================================================"
         echo "EIP-8037 Source-Based State Gas Refund Routing — Summary"
@@ -330,28 +307,21 @@ tasks:
         echo ""
         echo "EIP-8037 (Amsterdam) key change:"
         echo "  Within-tx SSTORE create+clear (0→x→0) triggers RefundState(97920/slot)."
-        echo "  This bypasses the EIP-3529 1/5 refund cap: full state gas returned."
-        echo "  The refund credits gasLeft, returned to tx.origin as ETH."
+        echo "  RefundState credits StateGas reservoir (not regular gas): subsequent slots"
+        echo "  draw from the rebuilt reservoir instead of spilling to regular gas."
+        echo "  Net: only 1 of 8 slots spills 97920 to regular gas."
         echo ""
-        echo "Test scenario: setAndClear(8) — set 8 slots 0→1 then 1→0 in ONE tx."
-        echo "  StorageWriter:         ${CONTRACT}"
-        echo "  setAndClear(8) tx:     ${SC_TX}"
-        echo "  gasUsed (receipt):     ${GAS_USED}"
-        echo "  effectiveGasPrice:     ${GAS_PRICE} wei"
-        echo "  balance before:        ${BAL_BEFORE} wei"
-        echo "  balance after:         ${BAL_AFTER} wei"
+        echo "Test scenario: setAndClear(8) — set 8 slots then clear all in ONE tx."
+        echo "  StorageWriter contract: ${CONTRACT}"
+        echo "  setAndClear(8) tx:      ${SC_TX}"
+        echo "  gasUsed (receipt):      ${GAS_USED_DEC} gas"
+        echo "  effectiveGasPrice:      ${GAS_PRICE} wei/gas"
         echo ""
-        python3 -c "
-        gu = int('${GAS_USED}', 16) if '${GAS_USED}'.startswith('0x') else int('${GAS_USED}')
-        gp = int('${GAS_PRICE}', 16) if '${GAS_PRICE}'.startswith('0x') else int('${GAS_PRICE}')
-        bb = int('${BAL_BEFORE}')
-        ba = int('${BAL_AFTER}')
-        refund = gu*gp - (bb-ba)
-        expected = 8 * 97920 * gp
-        pct = refund * 100 // expected if expected else 0
-        print(f'  expected state refund: {expected} wei  (8 × 97920 × {gp})')
-        print(f'  actual refund:         {refund} wei  ({pct}% of expected)')
-        "
+        echo "  EIP-8037 active range:  [150000, 600000] gas"
+        echo "    → only 1 spillover of 97920 to regular gas"
+        echo "  No-EIP-8037 range:      [>= 750000] gas"
+        echo "    → all 8 × 97920 = 783360 spill to regular gas"
+        echo ""
         echo "  Status: PASS"
         echo "================================================================"
 
