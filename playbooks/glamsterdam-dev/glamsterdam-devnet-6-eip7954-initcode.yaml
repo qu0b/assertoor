@@ -242,32 +242,30 @@ tasks:
 
         echo ""
         echo "Deploying VeryLargeContract.sol (${SIZE} bytes embedded DATA)..."
+        # Capture stdout only (2>/dev/null) — forge may emit size warnings to stderr that
+        # pollute VL_OUT and make jq fail. The || true ensures a compile error doesn't abort.
         VL_OUT=$(forge create \
           --rpc-url ${EL_RPC_HOST} \
           --private-key ${WALLET_PRIVKEY} \
           --legacy --broadcast \
           --json \
-          ${WORK_DIR}/VeryLargeContract.sol:VeryLargeContract 2>&1) || true
+          ${WORK_DIR}/VeryLargeContract.sol:VeryLargeContract 2>/dev/null) || true
 
-        VL_CONTRACT=$(echo "${VL_OUT}" | jq -r '.deployedTo // empty')
+        VL_CONTRACT=$(echo "${VL_OUT}" | jq -r '.deployedTo // empty' 2>/dev/null || true)
         if [ -z "${VL_CONTRACT}" ] || [ "${VL_CONTRACT}" = "null" ]; then
-            _FROM=$(echo "${VL_OUT}" | jq -r '.transaction.from // empty')
-            _NONHEX=$(echo "${VL_OUT}" | jq -r '.transaction.nonce // "0x0"')
-            _NON=$(python3 -c "print(int('${_NONHEX}', 16))")
+            _FROM=$(echo "${VL_OUT}" | jq -r '.transaction.from // empty' 2>/dev/null || true)
+            _NONHEX=$(echo "${VL_OUT}" | jq -r '.transaction.nonce // "0x0"' 2>/dev/null || echo "0x0")
+            _NON=$(python3 -c "print(int('${_NONHEX}', 16))" 2>/dev/null || echo 0)
             VL_CONTRACT=$(cast compute-address --nonce "${_NON}" "${_FROM}" 2>/dev/null | awk '{print $NF}')
         fi
-        VL_TX=$(echo "${VL_OUT}" | jq -r '.transactionHash // empty')
+        VL_TX=$(echo "${VL_OUT}" | jq -r '.transactionHash // empty' 2>/dev/null || true)
         echo "::set-output contractAddr60k ${VL_CONTRACT}"
         echo "::set-output deployTxHash60k ${VL_TX}"
 
         if [ -z "${VL_CONTRACT}" ]; then
           echo "WARN: 60 KiB contract deployment failed — this may be due to the block gas"
-          echo "      limit (not the initcode size limit). Check the error message below."
-          echo "forge output:"
-          echo "${VL_OUT}"
-          echo "NOTE: This is a soft failure. The EIP-7954 initcode-size assertion is"
-          echo "      already covered by Test 1. A gas-limit failure here does not mean"
-          echo "      EIP-7954 is absent."
+          echo "      limit, initcode size check, or Solidity compiler issue. This is a soft"
+          echo "      failure. The EIP-7954 initcode-size assertion is already covered by Test 1."
         else
           echo "Contract deployed at: ${VL_CONTRACT} (tx: ${VL_TX})"
 
@@ -276,7 +274,7 @@ tasks:
           echo "::set-output codeLen60k ${VL_CODE_LEN}"
           echo "Deployed code size: ${VL_CODE_LEN} bytes"
 
-          DATA_LEN=$(cast call ${VL_CONTRACT} "size()(uint256)" --rpc-url ${EL_RPC_HOST})
+          DATA_LEN=$(cast call ${VL_CONTRACT} "size()(uint256)" --rpc-url ${EL_RPC_HOST} | awk '{print $1}')
           echo "Contract size() returned: ${DATA_LEN} (expected: ${SIZE})"
 
           echo "PASS: 60 KiB contract deployed at ${VL_CONTRACT} — EIP-7954 65536-byte code limit confirmed"

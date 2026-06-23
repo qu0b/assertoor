@@ -1089,7 +1089,7 @@ tasks:
                 "destroy(address)" ${ADDR_ZERO} \
                 --private-key ${WALLET_PRIVKEY} \
                 --rpc-url ${EL_RPC} \
-                --gas 60000 \
+                --gas-limit 60000 \
                 --json)
 
               DESTROY_TX=$(echo "${DESTROY_JSON}" | jq -r '.transactionHash')

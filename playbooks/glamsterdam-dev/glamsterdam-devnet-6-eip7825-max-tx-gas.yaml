@@ -117,7 +117,7 @@ tasks:
 
         TX_JSON=$(cast send "${WALLET_ADDRESS}" \
           --value 1 \
-          --gas ${GAS_ABOVE} \
+          --gas-limit ${GAS_ABOVE} \
           --private-key "${WALLET_PRIVKEY}" \
           --rpc-url "${EL_RPC}" \
           --legacy \
@@ -191,7 +191,7 @@ tasks:
 
         TX_JSON=$(cast send "${WALLET_ADDRESS}" \
           --value 1 \
-          --gas ${TX_MAX_GAS_LIMIT} \
+          --gas-limit ${TX_MAX_GAS_LIMIT} \
           --private-key "${WALLET_PRIVKEY}" \
           --rpc-url "${EL_RPC}" \
           --legacy \
@@ -288,7 +288,7 @@ tasks:
         echo "Deploying GASLEFT contract..."
         DEPLOY_JSON=$(cast send \
           --value 0 \
-          --gas 500000 \
+          --gas-limit 500000 \
           --create "${INITCODE}" \
           --private-key "${WALLET_PRIVKEY}" \
           --rpc-url "${EL_RPC}" \
@@ -311,7 +311,7 @@ tasks:
 
         # Call with gas=TX_MAX_GAS_LIMIT (16,777,216) — baseline
         CALL_AT_MAX=$(cast call "${CONTRACT_ADDR}" \
-          --gas ${TX_MAX_GAS_LIMIT} \
+          --gas-limit ${TX_MAX_GAS_LIMIT} \
           --rpc-url "${EL_RPC}" \
           2>/dev/null || echo "0x0000000000000000000000000000000000000000000000000000000000000000")
 
@@ -321,7 +321,7 @@ tasks:
         # Call with gas=20,000,000 (above TX_MAX_GAS_LIMIT)
         GAS_ABOVE=20000000
         CALL_ABOVE=$(cast call "${CONTRACT_ADDR}" \
-          --gas ${GAS_ABOVE} \
+          --gas-limit ${GAS_ABOVE} \
           --rpc-url "${EL_RPC}" \
           2>/dev/null || echo "0x0000000000000000000000000000000000000000000000000000000000000000")
 
