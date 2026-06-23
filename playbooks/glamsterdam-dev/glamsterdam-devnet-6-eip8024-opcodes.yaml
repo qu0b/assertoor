@@ -126,7 +126,8 @@ tasks:
         echo "Chain ID: ${CHAIN_ID}"
         echo "RPC: ${RPC_ENDPOINT}"
 
-        uv run execute remote ./tests/amsterdam/eip8024_dupn_swapn_exchange/test_swapn.py \
+        timeout --signal=INT --kill-after=10 1750 uv run execute remote \
+          ./tests/amsterdam/eip8024_dupn_swapn_exchange/test_swapn.py \
           --fork=Amsterdam \
           --chain-id=${CHAIN_ID} \
           --rpc-endpoint=${RPC_ENDPOINT} \
@@ -138,9 +139,9 @@ tasks:
           -v \
           || true
 
-        TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8024_swapn.json)
-        PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_swapn.json)
-        FAILED=$(jq '[.tests[] | select(.outcome == "failed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_swapn.json)
+        TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8024_swapn.json 2>/dev/null || echo 0)
+        PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_swapn.json 2>/dev/null || echo 0)
+        FAILED=$(jq '[.tests[] | select(.outcome == "failed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_swapn.json 2>/dev/null || echo 0)
         echo "SWAPN: ${PASSED}/${TOTAL} passed, ${FAILED} failed"
         echo "::set-output swapnPassed ${PASSED}"
         echo "::set-output swapnTotal ${TOTAL}"
@@ -178,7 +179,8 @@ tasks:
 
         echo "=== EIP-8024 DUPN opcode tests ==="
 
-        uv run execute remote ./tests/amsterdam/eip8024_dupn_swapn_exchange/test_dupn.py \
+        timeout --signal=INT --kill-after=10 1750 uv run execute remote \
+          ./tests/amsterdam/eip8024_dupn_swapn_exchange/test_dupn.py \
           --fork=Amsterdam \
           --chain-id=${CHAIN_ID} \
           --rpc-endpoint=${RPC_ENDPOINT} \
@@ -190,9 +192,9 @@ tasks:
           -v \
           || true
 
-        TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8024_dupn.json)
-        PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_dupn.json)
-        FAILED=$(jq '[.tests[] | select(.outcome == "failed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_dupn.json)
+        TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8024_dupn.json 2>/dev/null || echo 0)
+        PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_dupn.json 2>/dev/null || echo 0)
+        FAILED=$(jq '[.tests[] | select(.outcome == "failed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_dupn.json 2>/dev/null || echo 0)
         echo "DUPN: ${PASSED}/${TOTAL} passed, ${FAILED} failed"
         echo "::set-output dupnPassed ${PASSED}"
         echo "::set-output dupnTotal ${TOTAL}"
@@ -230,7 +232,8 @@ tasks:
 
         echo "=== EIP-8024 EXCHANGE opcode tests ==="
 
-        uv run execute remote ./tests/amsterdam/eip8024_dupn_swapn_exchange/test_exchange.py \
+        timeout --signal=INT --kill-after=10 1750 uv run execute remote \
+          ./tests/amsterdam/eip8024_dupn_swapn_exchange/test_exchange.py \
           --fork=Amsterdam \
           --chain-id=${CHAIN_ID} \
           --rpc-endpoint=${RPC_ENDPOINT} \
@@ -242,9 +245,9 @@ tasks:
           -v \
           || true
 
-        TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8024_exchange.json)
-        PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_exchange.json)
-        FAILED=$(jq '[.tests[] | select(.outcome == "failed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_exchange.json)
+        TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8024_exchange.json 2>/dev/null || echo 0)
+        PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_exchange.json 2>/dev/null || echo 0)
+        FAILED=$(jq '[.tests[] | select(.outcome == "failed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024_exchange.json 2>/dev/null || echo 0)
         echo "EXCHANGE: ${PASSED}/${TOTAL} passed, ${FAILED} failed"
         echo "::set-output exchangePassed ${PASSED}"
         echo "::set-output exchangeTotal ${TOTAL}"
@@ -273,144 +276,97 @@ tasks:
 
         echo "=== EIP-8024 Opcode Smoke Test via eth_call ==="
         echo ""
-
-        # SWAPN smoke: push 1 and 2, SWAPN 0x00 (swap top with 2nd, equivalent to SWAP1),
-        # then MSTORE the result and RETURN.
-        # Expected result: the two values are swapped → we stored '1' (the original top) at 0x00.
-        #
-        # Bytecode (runs as initcode via eth_call to null address):
-        #   0x60 0x01   PUSH1 1     [stack: 1]
-        #   0x60 0x02   PUSH1 2     [stack: 2, 1]
-        #   0xe3 0x00   SWAPN 0x00  [stack: 1, 2]   -- swap top(2) with item at depth 0+2=2nd = '1'
-        #   0x60 0x00   PUSH1 0     [stack: 0, 1, 2]
-        #   0x52        MSTORE      mem[0] = 1     -- stores value at depth 2 into mem
-        #   0x60 0x20   PUSH1 32
-        #   0x60 0x00   PUSH1 0
-        #   0xf3        RETURN
-        # Note: MSTORE takes (offset, value) — pops offset first then value
-        # After SWAPN: stack is [1, 2] (1 on top)
-        # Then PUSH1 0 → [0, 1, 2]
-        # MSTORE(offset=0, value=1) → pops 0 then 1, stores 1 at mem[0]
-        # Expected return: 0x0000...0001
-        SWAPN_BYTECODE="0x600160020xe3006000526020 6000f3"
-        # Let me use correct hex without typos:
-        # 60 01 60 02 e3 00 60 00 52 60 20 60 00 f3 = 13 bytes
-        SWAPN_BYTECODE="0x6001600260e300600052602060 00f3"
-        # Correct bytecode without spaces:
-        SWAPN_CLEAN="0x60016002e300600052602060 00f3"
-        SWAPN_CLEAN="0x60016002e30060005260206000f3"
-
-        echo "SWAPN smoke bytecode: ${SWAPN_CLEAN}"
-        SWAPN_RESP=$(curl -s -X POST \
-          -H "Content-Type: application/json" \
-          --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_call\",\"params\":[{\"data\":\"${SWAPN_CLEAN}\"},\"latest\"],\"id\":1}" \
-          ${EL_RPC})
-
-        echo "SWAPN response:"
-        echo "${SWAPN_RESP}" | jq '.'
-
-        SWAPN_ERR=$(echo "${SWAPN_RESP}" | jq -r '.error // empty')
-        if [ -n "${SWAPN_ERR}" ]; then
-          echo "FAIL: SWAPN opcode eth_call returned error: ${SWAPN_ERR}"
-          exit 1
-        fi
-        SWAPN_RESULT=$(echo "${SWAPN_RESP}" | jq -r '.result // empty')
-        echo "SWAPN result: ${SWAPN_RESULT}"
-        echo "Expected:     0x0000000000000000000000000000000000000000000000000000000000000001"
-        if [ "${SWAPN_RESULT}" = "0x0000000000000000000000000000000000000000000000000000000000000001" ]; then
-          echo "PASS: SWAPN correctly swapped values"
-        else
-          echo "WARN: SWAPN result unexpected — opcode accepted (no error) but value may differ"
-          echo "      This could be correct depending on exact gas consumption during eth_call"
-        fi
+        echo "EIP-8024 encoding: decodeSingle(x) = (x + 145) % 256 (depths 17-235)"
+        echo "  SWAPN imm=0x80: decodeSingle(128) = 17 → swap top with 18th item"
+        echo "  DUPN  imm=0x80: decodeSingle(128) = 17 → dup 17th item to top"
+        echo "  EXCHANGE imm=0x89: decodePair(0x89) = (1,7) → swap 2nd and 8th items"
         echo ""
 
-        # DUPN smoke: push 42 (0x2a), DUPN 0x00 (dup top item = DUP1 equivalent),
-        # MSTORE the dup'd value, RETURN.
-        # After DUPN 0x00: stack is [42, 42]
-        # PUSH1 0, MSTORE → stores 42 at offset 0
-        # Expected return: 0x000...002a
-        # Bytecode: 60 2a e6 00 60 00 52 60 20 60 00 f3 = 11 bytes
-        DUPN_CLEAN="0x602ae60060005260206000f3"
-        echo "DUPN smoke bytecode: ${DUPN_CLEAN}"
+        EXPECTED="0x0000000000000000000000000000000000000000000000000000000000000001"
+
+        # ── DUPN 0x80 (depth=17) ──────────────────────────────────────────────
+        # Push 1..17. Stack (top-first): [17,16,...,2,1]. 17th item (deepest) = 1.
+        # DUPN 0x80: depth=17, dups 17th item (1) to top → [1, 17, 16, ..., 2, 1]
+        # PUSH1 0, MSTORE → stores 1 at mem[0]. Expected: 0x0000...0001.
+        # 44-byte sequence: 17×PUSH1 + DUPN 0x80 + PUSH1 0 + MSTORE + PUSH1 32 + PUSH1 0 + RETURN
+        DUPN_BYTECODE="0x600160026003600460056006600760086009600a600b600c600d600e600f60106011e68060005260206000f3"
+
+        echo "DUPN 0x80 bytecode (44 bytes):"
         DUPN_RESP=$(curl -s -X POST \
           -H "Content-Type: application/json" \
-          --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_call\",\"params\":[{\"data\":\"${DUPN_CLEAN}\"},\"latest\"],\"id\":2}" \
+          --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_call\",\"params\":[{\"data\":\"${DUPN_BYTECODE}\"},\"latest\"],\"id\":1}" \
           ${EL_RPC})
 
-        echo "DUPN response:"
-        echo "${DUPN_RESP}" | jq '.'
-
         DUPN_ERR=$(echo "${DUPN_RESP}" | jq -r '.error // empty')
+        DUPN_RESULT=$(echo "${DUPN_RESP}" | jq -r '.result // empty')
         if [ -n "${DUPN_ERR}" ]; then
-          echo "FAIL: DUPN opcode eth_call returned error: ${DUPN_ERR}"
+          echo "FAIL: DUPN eth_call error: ${DUPN_ERR}"
           exit 1
         fi
-        DUPN_RESULT=$(echo "${DUPN_RESP}" | jq -r '.result // empty')
-        echo "DUPN result: ${DUPN_RESULT}"
-        echo "Expected:    0x000000000000000000000000000000000000000000000000000000000000002a"
-        if [ "${DUPN_RESULT}" = "0x000000000000000000000000000000000000000000000000000000000000002a" ]; then
-          echo "PASS: DUPN correctly duplicated value 42"
+        if [ "${DUPN_RESULT}" = "${EXPECTED}" ]; then
+          echo "PASS: DUPN 0x80 (depth=17) → result=${DUPN_RESULT}"
         else
-          echo "WARN: DUPN result unexpected — opcode accepted (no error), result: ${DUPN_RESULT}"
+          echo "FAIL: DUPN 0x80 expected ${EXPECTED} got ${DUPN_RESULT}"
+          exit 1
         fi
         echo ""
 
-        # EXCHANGE smoke: push values 1, 2, 3 (top=3), EXCHANGE 0x01 (swap 2nd and 3rd),
-        # stack becomes [2, 3, 1] (top=2). PUSH1 0, MSTORE stores 2.
-        # EXCHANGE nibbles: high=0 (N=0 means 1st item below top = 2nd), low=1 (M=1 means 2nd item below top = 3rd)
-        # Wait — EXCHANGE high=N means swap item at depth N+1 and item at depth M+1
-        # EXCHANGE 0x01: swap item at depth 0+1=1 (top) and depth 1+1=2 (2nd)... that's just SWAP1
-        # Let me use EXCHANGE 0x12: high=1 (depth 2), low=2 (depth 3)
-        # Stack before: push 10, push 20, push 30, push 40 = [40, 30, 20, 10]
-        # EXCHANGE 0x12: swap depth 1+1=2 (30) and depth 2+1=3 (20) → [40, 20, 30, 10]
-        # Then pop top (40), push 0, MSTORE → stores 20? No - MSTORE takes (offset, value)
-        # Let's simplify: push 1, push 2, push 3 = [3, 2, 1]
-        # EXCHANGE 0x10: swap depth 1+1=2 (2nd = 2) and depth 0+1=1 (top = 3) → same as SWAP1 → [2, 3, 1]
-        # Better: EXCHANGE 0x01 where high nibble=0, low nibble=1
-        # That means: swap item at position (0+1=1) which is top, and item at position (1+1=2) which is 2nd
-        # So [3, 2, 1] → [2, 3, 1]
-        # Then PUSH1 0x00, MSTORE → pops offset(0) then value(2), stores 2 at offset 0
-        # Expected: 0x0000...0002
-        # Bytecode: 60 01 60 02 60 03 e8 01 60 00 52 60 20 60 00 f3 = 14 bytes
-        EXCHANGE_CLEAN="0x60016002600360e801600052602060 00f3"
-        EXCHANGE_CLEAN="0x600160026003e8016000526020 6000f3"
-        EXCHANGE_CLEAN="0x60016002600360e80160005260206000f3"
-        # Wait, the opcode is 0xe8 and the immediate byte is 0x01
-        # Let me recount: 60 01 60 02 60 03 e8 01 60 00 52 60 20 60 00 f3
-        EXCHANGE_CLEAN="0x6001600260036801600052602060 00f3"
-        # Hmm e8 vs 68... e8 is correct for EXCHANGE
-        # But PUSH opcode 0x60 with 0x01 = 60 01 (2 bytes)
-        # The sequence is: 60 01 | 60 02 | 60 03 | e8 01 | 60 00 | 52 | 60 20 | 60 00 | f3
-        EXCHANGE_CLEAN="0x6001600260036801600052602060 00f3"
-        # That's wrong - e8 01 should be bytes "e8" "01"
-        # In hex string: "e801"
-        EXCHANGE_CLEAN="0x60016002600360e80160005260206000f3"
-        # Wait "60e8" means PUSH1 0xe8, not the EXCHANGE opcode 0xe8!
-        # Let me fix: PUSH1 0x01 = "6001", PUSH1 0x02 = "6002", PUSH1 0x03 = "6003"
-        # Then EXCHANGE 0x01 = opcode e8 followed by immediate 01 = "e801"
-        # Then PUSH1 0x00 = "6000", MSTORE = "52", PUSH1 0x20 = "6020", PUSH1 0x00 = "6000", RETURN = "f3"
-        EXCHANGE_CLEAN="0x60016002600360e80160005260206000f3"
-        # But that has 60e8 which is PUSH1 0xe8! We need e8 to be the opcode itself.
-        # "6001" "6002" "6003" "e8" "01" "6000" "52" "6020" "6000" "f3"
-        EXCHANGE_CLEAN="0x600160026003e80160005260206000f3"
-        echo "EXCHANGE smoke bytecode: ${EXCHANGE_CLEAN}"
-        EXCHANGE_RESP=$(curl -s -X POST \
+        # ── SWAPN 0x80 (depth=17) ─────────────────────────────────────────────
+        # Push 1..18. Stack: [18,17,...,2,1]. Top=18, 18th item=1.
+        # SWAPN 0x80: depth=17, swap top(18) with 18th(1) → [1, 17, ..., 2, 18]
+        # PUSH1 0, MSTORE → stores 1 at mem[0]. Expected: 0x0000...0001.
+        # 46-byte sequence
+        SWAPN_BYTECODE="0x600160026003600460056006600760086009600a600b600c600d600e600f601060116012e78060005260206000f3"
+
+        echo "SWAPN 0x80 bytecode (46 bytes):"
+        SWAPN_RESP=$(curl -s -X POST \
           -H "Content-Type: application/json" \
-          --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_call\",\"params\":[{\"data\":\"${EXCHANGE_CLEAN}\"},\"latest\"],\"id\":3}" \
+          --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_call\",\"params\":[{\"data\":\"${SWAPN_BYTECODE}\"},\"latest\"],\"id\":2}" \
           ${EL_RPC})
 
-        echo "EXCHANGE response:"
-        echo "${EXCHANGE_RESP}" | jq '.'
-
-        EXCHANGE_ERR=$(echo "${EXCHANGE_RESP}" | jq -r '.error // empty')
-        if [ -n "${EXCHANGE_ERR}" ]; then
-          echo "FAIL: EXCHANGE opcode eth_call returned error: ${EXCHANGE_ERR}"
+        SWAPN_ERR=$(echo "${SWAPN_RESP}" | jq -r '.error // empty')
+        SWAPN_RESULT=$(echo "${SWAPN_RESP}" | jq -r '.result // empty')
+        if [ -n "${SWAPN_ERR}" ]; then
+          echo "FAIL: SWAPN eth_call error: ${SWAPN_ERR}"
           exit 1
         fi
+        if [ "${SWAPN_RESULT}" = "${EXPECTED}" ]; then
+          echo "PASS: SWAPN 0x80 (depth=17) → result=${SWAPN_RESULT}"
+        else
+          echo "FAIL: SWAPN 0x80 expected ${EXPECTED} got ${SWAPN_RESULT}"
+          exit 1
+        fi
+        echo ""
+
+        # ── EXCHANGE 0x89 (n=1, m=7) ──────────────────────────────────────────
+        # decodePair(0x89): 0x89^143=6, q=0,r=6 → (1,7): swap depth-1(2nd) and depth-7(8th)
+        # Push 1..8. Stack: [8,7,6,5,4,3,2,1]. 2nd=7, 8th=1.
+        # EXCHANGE 0x89: swap 2nd(7) with 8th(1) → [8, 1, 6, 5, 4, 3, 2, 7]
+        # POP (removes 8). Stack: [1, 6, 5, 4, 3, 2, 7]. Top=1.
+        # PUSH1 0, MSTORE → stores 1 at mem[0]. Expected: 0x0000...0001.
+        # 27-byte sequence
+        EXCHANGE_BYTECODE="0x60016002600360046005600660076008e8895060005260206000f3"
+
+        echo "EXCHANGE 0x89 bytecode (27 bytes):"
+        EXCHANGE_RESP=$(curl -s -X POST \
+          -H "Content-Type: application/json" \
+          --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_call\",\"params\":[{\"data\":\"${EXCHANGE_BYTECODE}\"},\"latest\"],\"id\":3}" \
+          ${EL_RPC})
+
+        EXCHANGE_ERR=$(echo "${EXCHANGE_RESP}" | jq -r '.error // empty')
         EXCHANGE_RESULT=$(echo "${EXCHANGE_RESP}" | jq -r '.result // empty')
-        echo "EXCHANGE result: ${EXCHANGE_RESULT}"
-        echo "PASS: EXCHANGE opcode accepted (no revert)"
+        if [ -n "${EXCHANGE_ERR}" ]; then
+          echo "FAIL: EXCHANGE eth_call error: ${EXCHANGE_ERR}"
+          exit 1
+        fi
+        if [ "${EXCHANGE_RESULT}" = "${EXPECTED}" ]; then
+          echo "PASS: EXCHANGE 0x89 (swap 2nd↔8th) → result=${EXCHANGE_RESULT}"
+        else
+          echo "FAIL: EXCHANGE 0x89 expected ${EXPECTED} got ${EXCHANGE_RESULT}"
+          exit 1
+        fi
+        echo ""
+        echo "=== EIP-8024 smoke test PASSED: DUPN, SWAPN, EXCHANGE all correct ==="
 
   # ─── Summary ──────────────────────────────────────────────────────────────
   - name: run_shell
