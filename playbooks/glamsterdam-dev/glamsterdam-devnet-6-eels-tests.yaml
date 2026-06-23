@@ -135,7 +135,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip2780_reduce_intrinsic_tx_gas \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip2780_reduce_intrinsic_tx_gas \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -146,8 +146,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip2780.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip2780.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip2780.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip2780.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip2780.json 2>/dev/null || echo 0)
               echo "EIP-2780: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -182,7 +182,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip7708_eth_transfer_logs \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip7708_eth_transfer_logs \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -193,8 +193,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip7708.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7708.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7708.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7708.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7708.json 2>/dev/null || echo 0)
               echo "EIP-7708: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -229,7 +229,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip7778_block_gas_accounting_without_refunds \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip7778_block_gas_accounting_without_refunds \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -240,8 +240,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip7778.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7778.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7778.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7778.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7778.json 2>/dev/null || echo 0)
               echo "EIP-7778: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -280,7 +280,7 @@ tasks:
               # but Environment(slot_number=) is a filler-time hint and cannot be honored
               # in execute mode against a live chain (SLOTNUM returns the actual current
               # beacon slot). Only test_slotnum_gas_cost runs in execute mode.
-              uv run execute remote ./tests/amsterdam/eip7843_slotnum \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip7843_slotnum \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -292,8 +292,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip7843.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7843.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7843.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7843.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7843.json 2>/dev/null || echo 0)
               echo "EIP-7843: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -328,7 +328,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip7928_block_level_access_lists \
+              timeout --signal=INT --kill-after=10 7100 uv run execute remote ./tests/amsterdam/eip7928_block_level_access_lists \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -340,8 +340,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip7928.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7928.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7928.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7928.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7928.json 2>/dev/null || echo 0)
               echo "EIP-7928: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -376,7 +376,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip7954_increase_max_contract_size \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip7954_increase_max_contract_size \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -387,8 +387,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip7954.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7954.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7954.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7954.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7954.json 2>/dev/null || echo 0)
               echo "EIP-7954: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -423,7 +423,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip7976_increase_calldata_floor_cost \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip7976_increase_calldata_floor_cost \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -434,8 +434,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip7976.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7976.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7976.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7976.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7976.json 2>/dev/null || echo 0)
               echo "EIP-7976: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -470,7 +470,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip7981_increase_access_list_cost \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip7981_increase_access_list_cost \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -481,8 +481,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip7981.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7981.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7981.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7981.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7981.json 2>/dev/null || echo 0)
               echo "EIP-7981: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -517,7 +517,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip7997_deterministic_factory_predeploy \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip7997_deterministic_factory_predeploy \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -528,8 +528,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip7997.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7997.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7997.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip7997.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip7997.json 2>/dev/null || echo 0)
               echo "EIP-7997: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -564,7 +564,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip8024_dupn_swapn_exchange \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip8024_dupn_swapn_exchange \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -575,8 +575,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip8024.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8024.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8024.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8024.json 2>/dev/null || echo 0)
               echo "EIP-8024: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -615,7 +615,7 @@ tasks:
               # (PR #2999): state gas refunds return to the originating source
               # (gas_left vs reservoir) rather than always to gas_left. EIP-8038
               # (state-access gas repricing) is integrated into this test suite.
-              uv run execute remote ./tests/amsterdam/eip8037_state_creation_gas_cost_increase \
+              timeout --signal=INT --kill-after=10 7100 uv run execute remote ./tests/amsterdam/eip8037_state_creation_gas_cost_increase \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -627,8 +627,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip8037.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8037.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8037.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8037.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8037.json 2>/dev/null || echo 0)
               echo "EIP-8037: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -663,7 +663,7 @@ tasks:
               cd ${EELS_DIR}
               export HOME=${EELS_DIR}
 
-              uv run execute remote ./tests/amsterdam/eip8246_selfdestruct_no_burn \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip8246_selfdestruct_no_burn \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -674,8 +674,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip8246.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8246.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8246.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8246.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8246.json 2>/dev/null || echo 0)
               echo "EIP-8246: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
@@ -715,7 +715,7 @@ tasks:
               # Tests cover both builder deposits and builder exits.
               # Timeout may need increase if builder deposit/exit cycle is slow
               # on a live devnet (CL processing latency per request).
-              uv run execute remote ./tests/amsterdam/eip8282_builder_execution_requests \
+              timeout --signal=INT --kill-after=10 1750 uv run execute remote ./tests/amsterdam/eip8282_builder_execution_requests \
                 --fork=Amsterdam \
                 --chain-id=${CHAIN_ID} \
                 --rpc-endpoint=${RPC_ENDPOINT} \
@@ -726,8 +726,8 @@ tasks:
                 --html=${ASSERTOOR_RESULT_DIR}/eip8282.html \
                 || true
 
-              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8282.json)
-              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8282.json)
+              TOTAL=$(jq '.tests | length' ${ASSERTOOR_RESULT_DIR}/eip8282.json 2>/dev/null || echo 0)
+              PASSED=$(jq '[.tests[] | select(.outcome == "passed")] | length' ${ASSERTOOR_RESULT_DIR}/eip8282.json 2>/dev/null || echo 0)
               echo "EIP-8282: ${PASSED}/${TOTAL}"
               echo "::set-output passed ${PASSED}"
               echo "::set-output total ${TOTAL}"
