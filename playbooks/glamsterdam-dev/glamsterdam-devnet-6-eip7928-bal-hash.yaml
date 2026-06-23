@@ -182,3 +182,83 @@ tasks:
           exit 1
         fi
         echo "RESULT: PASS — EIP-7928 blockAccessListHash is present and non-empty in all blocks (including empty blocks via EIP-4788), and varies across blocks."
+        echo "::set-output latestBlockHex ${LATEST_HEX}"
+
+  # Cross-client consistency: if ≥2 good clients available, verify blockAccessListHash
+  # matches between them on the same blocks. A mismatch indicates a client bug in BAL
+  # computation — two independent implementations of EIP-7928 must agree.
+  - name: run_shell
+    title: "Cross-client BAL hash consistency (verify two EL clients agree)"
+    id: crossClientBAL
+    timeout: 5m
+    config:
+      shell: bash
+      envVars:
+        EL_RPC_A: tasks.clientCheck.outputs.goodClients[0].elRpcUrl
+        EL_RPC_B: tasks.clientCheck.outputs.goodClients[1].elRpcUrl
+        LATEST_BLOCK_HEX: tasks.testBalHash.outputs.latestBlockHex
+      command: |
+        EL_RPC_A=$(echo $EL_RPC_A | jq -r)
+        EL_RPC_B=$(echo $EL_RPC_B | jq -r)
+        LATEST_BLOCK_HEX=$(echo $LATEST_BLOCK_HEX | jq -r)
+
+        if [ -z "${EL_RPC_B}" ] || [ "${EL_RPC_B}" = "null" ]; then
+          echo "Only one EL client available — skipping cross-client consistency check."
+          exit 0
+        fi
+
+        echo "=== EIP-7928 Cross-Client BAL Hash Consistency ==="
+        echo "Client A: ${EL_RPC_A}"
+        echo "Client B: ${EL_RPC_B}"
+        echo ""
+
+        LATEST_DEC=$(printf '%d' "${LATEST_BLOCK_HEX}" 2>/dev/null || echo "100")
+        START=$(( LATEST_DEC - 9 ))
+        [ $START -lt 1 ] && START=1
+
+        MISMATCHES=0
+        COMPARED=0
+
+        for BLK in $(seq $START $LATEST_DEC); do
+          BLK_HEX=$(printf '0x%x' $BLK)
+
+          HASH_A=$(curl -s -X POST "${EL_RPC_A}" \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"${BLK_HEX}\",false],\"id\":1}" 2>/dev/null \
+            | grep -oE '"blockAccessListHash":"0x[0-9a-f]+"' | grep -oE '0x[0-9a-f]+')
+
+          HASH_B=$(curl -s -X POST "${EL_RPC_B}" \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"${BLK_HEX}\",false],\"id\":1}" 2>/dev/null \
+            | grep -oE '"blockAccessListHash":"0x[0-9a-f]+"' | grep -oE '0x[0-9a-f]+')
+
+          if [ -z "${HASH_A}" ] || [ -z "${HASH_B}" ]; then
+            echo "Block ${BLK}: skipped (hash not available from one client)"
+            continue
+          fi
+
+          COMPARED=$(( COMPARED + 1 ))
+          if [ "${HASH_A}" = "${HASH_B}" ]; then
+            echo "Block ${BLK}: MATCH  ${HASH_A:0:18}..."
+          else
+            echo "Block ${BLK}: MISMATCH!"
+            echo "  Client A: ${HASH_A}"
+            echo "  Client B: ${HASH_B}"
+            MISMATCHES=$(( MISMATCHES + 1 ))
+          fi
+        done
+
+        echo ""
+        echo "Cross-client comparison: ${COMPARED} blocks compared, ${MISMATCHES} mismatches"
+
+        if [ "${COMPARED}" -eq 0 ]; then
+          echo "NOTE: No blocks available for comparison. Skipping."
+        elif [ "${MISMATCHES}" -gt 0 ]; then
+          echo "FAIL: ${MISMATCHES} blockAccessListHash mismatches between clients!"
+          echo "      Two independent EIP-7928 implementations must agree on the BAL hash."
+          echo "      This indicates a client implementation bug."
+          exit 1
+        else
+          echo "PASS: All ${COMPARED} blocks have matching blockAccessListHash across both clients."
+          echo "      EIP-7928 BAL hash computation is consistent across implementations."
+        fi
