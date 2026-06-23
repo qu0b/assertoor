@@ -222,15 +222,18 @@ tasks:
         for BLK in $(seq $START $LATEST_DEC); do
           BLK_HEX=$(printf '0x%x' $BLK)
 
-          HASH_A=$(curl -s -X POST "${EL_RPC_A}" \
+          RESP_A=$(curl -s -X POST "${EL_RPC_A}" \
             -H "Content-Type: application/json" \
-            -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"${BLK_HEX}\",false],\"id\":1}" 2>/dev/null \
-            | grep -oE '"blockAccessListHash":"0x[0-9a-f]+"' | grep -oE '0x[0-9a-f]+')
+            -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"${BLK_HEX}\",false],\"id\":1}" 2>/dev/null)
+          # Accept either "blockAccessListHash" (geth/nethermind) or "balHash" (besu alias)
+          HASH_A=$(echo "${RESP_A}" | grep -oE '"blockAccessListHash":"0x[0-9a-f]+"' | grep -oE '0x[0-9a-f]+')
+          [ -z "${HASH_A}" ] && HASH_A=$(echo "${RESP_A}" | grep -oE '"balHash":"0x[0-9a-f]+"' | grep -oE '0x[0-9a-f]+')
 
-          HASH_B=$(curl -s -X POST "${EL_RPC_B}" \
+          RESP_B=$(curl -s -X POST "${EL_RPC_B}" \
             -H "Content-Type: application/json" \
-            -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"${BLK_HEX}\",false],\"id\":1}" 2>/dev/null \
-            | grep -oE '"blockAccessListHash":"0x[0-9a-f]+"' | grep -oE '0x[0-9a-f]+')
+            -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"${BLK_HEX}\",false],\"id\":1}" 2>/dev/null)
+          HASH_B=$(echo "${RESP_B}" | grep -oE '"blockAccessListHash":"0x[0-9a-f]+"' | grep -oE '0x[0-9a-f]+')
+          [ -z "${HASH_B}" ] && HASH_B=$(echo "${RESP_B}" | grep -oE '"balHash":"0x[0-9a-f]+"' | grep -oE '0x[0-9a-f]+')
 
           if [ -z "${HASH_A}" ] || [ -z "${HASH_B}" ]; then
             echo "Block ${BLK}: skipped (hash not available from one client)"
