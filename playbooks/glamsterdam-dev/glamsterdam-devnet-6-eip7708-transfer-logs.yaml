@@ -961,27 +961,28 @@ SOLEOF
               echo "      EIP-7708 correctly instruments SELFDESTRUCT ETH movements"
               echo "::set-output sdTransferVerified true"
 
-  # Test 6: SELFDESTRUCT to address(0) emits NO Transfer log (EIP-8246 no-burn × EIP-7708)
-  # EIP-8246 (Amsterdam): SELFDESTRUCT(address(0)) silently drops the ETH —
-  # address(0)'s balance does NOT increase (the ETH is gone, not burned).
-  # Since no actual ETH transfer occurs, EIP-7708 must NOT emit a Transfer log.
+  # Test 6: SELFDESTRUCT to address(0) emits Transfer log (EIP-7708 tracks all ETH movements)
+  # EIP-8246 only prevents the burn when a contract created in the same tx SELFDESTRUCTs to itself.
+  # It does NOT change EIP-6780 behavior: SELFDESTRUCT in a non-creation tx still moves ETH to
+  # the beneficiary, including address(0). EIP-7708 emits Transfer(contract, address(0), value)
+  # for this case — any non-zero ETH movement generates a Transfer log regardless of the recipient.
   - name: run_tasks
-    title: "Test 6: SELFDESTRUCT to address(0) emits NO Transfer log (EIP-8246 no-burn)"
+    title: "Test 6: SELFDESTRUCT to address(0) emits Transfer log (EIP-7708 tracks all ETH moves)"
     id: testSelfDestructNoBurn
     config:
       continueOnFailure: false
       tasks:
         - name: generate_child_wallet
           id: selfDestructNoBurnWallet
-          title: "Generate funded wallet for SELFDESTRUCT no-burn test (5 ETH)"
+          title: "Generate funded wallet for SELFDESTRUCT-to-zero test (5 ETH)"
           config:
             prefundMinBalance: 5000000000000000000  # 5 ETH
-            walletSeed: "eip7708-selfdestruct-noburn-test"
+            walletSeed: "eip7708-selfdestruct-tozero-test"
           configVars:
             privateKey: "walletPrivkey"
 
         - name: run_shell
-          title: "Deploy SelfDestructable, destroy to address(0) — verify NO Transfer log emitted"
+          title: "Deploy SelfDestructable, destroy to address(0) — verify Transfer log emitted and address(0) credited"
           id: selfDestructToZero
           timeout: 15m
           config:
@@ -1008,21 +1009,25 @@ SOLEOF
               export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
               export HOME=${FOUNDRY_HOME}
 
-              echo "=== EIP-7708 Test 6: SELFDESTRUCT to address(0) emits NO Transfer log ==="
+              echo "=== EIP-7708 Test 6: SELFDESTRUCT to address(0) emits Transfer log ==="
               echo "Wallet: ${WALLET_ADDRESS}"
               echo "RPC:    ${EL_RPC}"
               echo ""
-              echo "Test goal: EIP-8246 drops ETH when SELFDESTRUCT(address(0)) is called."
-              echo "  Since no actual ETH transfer occurs (ETH disappears), EIP-7708 must"
-              echo "  NOT emit a Transfer log — there is no recipient."
+              echo "Test goal: EIP-7708 emits Transfer log for ALL ETH movements."
+              echo "  SELFDESTRUCT(address(0)) in a non-creation tx is governed by EIP-6780:"
+              echo "  ETH moves from contract to address(0) (EIP-6780, contract not destroyed)."
+              echo "  EIP-7708 must emit Transfer(contract, address(0), amount) for this."
+              echo "  EIP-8246 does NOT change this — it only prevents the burn for same-tx"
+              echo "  SELFDESTRUCT-to-self (newContract=true, beneficiary=self)."
               echo ""
 
+              FUND_WEI=500000000000000000  # 0.5 ETH
               ADDR_ZERO="0x0000000000000000000000000000000000000000"
               BALANCE_ZERO_BEFORE=$(cast balance ${ADDR_ZERO} --rpc-url ${EL_RPC} 2>/dev/null || echo "0")
               echo "address(0) balance before: ${BALANCE_ZERO_BEFORE} wei"
 
               # Deploy a fresh SelfDestructable with 0.5 ETH using the .sol from Test 5
-              echo "Deploying SelfDestructable with 0.5 ETH..."
+              echo "Deploying SelfDestructable with 0.5 ETH (creation tx)..."
               DEPLOY_OUT=$(forge create \
                 --rpc-url ${EL_RPC} \
                 --private-key ${WALLET_PRIVKEY} \
@@ -1043,7 +1048,8 @@ SOLEOF
               echo "::set-output sdNoBurnContractAddr ${CONTRACT6}"
 
               echo ""
-              echo "Calling destroy(address(0)) — ETH should be dropped per EIP-8246, no Transfer log."
+              echo "Calling destroy(address(0)) in a separate tx (non-creation tx, EIP-6780 applies)..."
+              echo "Expected: ETH moves to address(0), Transfer log emitted."
               DESTROY_JSON=$(cast send ${CONTRACT6} \
                 "destroy(address)" ${ADDR_ZERO} \
                 --private-key ${WALLET_PRIVKEY} \
@@ -1061,18 +1067,21 @@ SOLEOF
                 exit 1
               fi
 
-              # EIP-8246: address(0) balance must NOT change
+              # EIP-6780: address(0) balance MUST increase by exactly 0.5 ETH
               BALANCE_ZERO_AFTER=$(cast balance ${ADDR_ZERO} --rpc-url ${EL_RPC} 2>/dev/null || echo "0")
-              echo "address(0) balance after: ${BALANCE_ZERO_AFTER} wei (must equal before)"
-              if [ "${BALANCE_ZERO_AFTER}" != "${BALANCE_ZERO_BEFORE}" ]; then
-                echo "FAIL: address(0) balance changed — EIP-8246 no-burn is not active!"
+              echo ""
+              echo "address(0) balance after: ${BALANCE_ZERO_AFTER} wei"
+              EXPECTED_ZERO=$(echo "${BALANCE_ZERO_BEFORE} + ${FUND_WEI}" | bc)
+              if [ "${BALANCE_ZERO_AFTER}" != "${EXPECTED_ZERO}" ]; then
+                echo "FAIL: address(0) balance not increased by 0.5 ETH as expected by EIP-6780!"
                 echo "  Before: ${BALANCE_ZERO_BEFORE}"
                 echo "  After:  ${BALANCE_ZERO_AFTER}"
+                echo "  Expected: ${EXPECTED_ZERO} (before + 0.5 ETH)"
                 exit 1
               fi
-              echo "EIP-8246 confirmed: address(0) balance unchanged (ETH was dropped) ✓"
+              echo "EIP-6780 confirmed: address(0) received 0.5 ETH (before=${BALANCE_ZERO_BEFORE}, after=${BALANCE_ZERO_AFTER})"
 
-              # EIP-7708: NO Transfer log should appear (no actual ETH movement)
+              # EIP-7708: Transfer log MUST appear (ETH moved from contract to address(0))
               RECEIPT=$(curl -s -X POST \
                 -H "Content-Type: application/json" \
                 --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\",\"params\":[\"${DESTROY_TX}\"],\"id\":1}" \
@@ -1080,24 +1089,36 @@ SOLEOF
 
               TRANSFER_LOGS=$(echo "${RECEIPT}" | jq \
                 --arg topic "${TRANSFER_TOPIC}" \
-                '[.result.logs[] | select(.topics[0] == $topic)]')
+                --arg logaddr "${TRANSFER_LOG_ADDR}" \
+                '[.result.logs[] | select(.topics[0] == $topic and (.address | ascii_downcase) == ($logaddr | ascii_downcase))]')
               TRANSFER_LOG_COUNT=$(echo "${TRANSFER_LOGS}" | jq 'length')
               echo ""
-              echo "Transfer logs in destroy(address(0)) receipt: ${TRANSFER_LOG_COUNT} (expected 0)"
+              echo "Transfer logs from system address in destroy(address(0)) receipt: ${TRANSFER_LOG_COUNT} (expected 1)"
 
-              if [ "${TRANSFER_LOG_COUNT}" != "0" ] && [ "${TRANSFER_LOG_COUNT}" != "null" ]; then
-                echo "FAIL: destroy(address(0)) emitted ${TRANSFER_LOG_COUNT} Transfer log(s)."
-                echo "      EIP-8246 drops ETH at address(0) — no actual transfer occurs."
-                echo "      EIP-7708 must NOT emit a Transfer log when ETH is dropped."
-                echo "Transfer logs:"
-                echo "${TRANSFER_LOGS}"
+              if [ "${TRANSFER_LOG_COUNT}" = "0" ] || [ "${TRANSFER_LOG_COUNT}" = "null" ]; then
+                echo "FAIL: destroy(address(0)) emitted NO Transfer log."
+                echo "      EIP-7708 must emit Transfer(contract, address(0), amount) for any ETH movement."
+                echo "      EIP-8246 does not prevent this — it only affects same-tx SELFDESTRUCT-to-self."
+                exit 1
+              fi
+
+              # Verify the Transfer log: from=contract, to=address(0), value=0.5 ETH
+              LOG_FROM=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].topics[1]' | sed 's/0x000000000000000000000000/0x/')
+              LOG_TO=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].topics[2]' | sed 's/0x000000000000000000000000/0x/')
+              LOG_VALUE_HEX=$(echo "${TRANSFER_LOGS}" | jq -r '.[0].data')
+              LOG_VALUE=$(printf "%d" ${LOG_VALUE_HEX} 2>/dev/null || python3 -c "print(int('${LOG_VALUE_HEX}', 16))")
+
+              echo "Transfer log: from=${LOG_FROM} to=${LOG_TO} value=${LOG_VALUE} wei"
+
+              if [ "${LOG_VALUE}" != "${FUND_WEI}" ]; then
+                echo "FAIL: Transfer log value ${LOG_VALUE} != expected ${FUND_WEI}"
                 exit 1
               fi
 
               echo ""
-              echo "PASS: SELFDESTRUCT to address(0) emitted no Transfer log"
-              echo "      EIP-7708 × EIP-8246 interaction verified correctly"
-              echo "      (ETH dropped → no recipient → no Transfer event)"
+              echo "PASS: SELFDESTRUCT to address(0) emitted Transfer log"
+              echo "      EIP-7708 correctly tracks ETH movement to address(0)"
+              echo "      (EIP-6780: non-creation-tx SELFDESTRUCT moves ETH to any beneficiary)"
               echo "::set-output sdNoBurnVerified true"
 
   # Final summary
@@ -1178,10 +1199,11 @@ SOLEOF
         echo "  SELFDESTRUCT Transfer verified: ${SD_TRANSFER_VERIFIED}"
         echo "  Status: PASS"
         echo ""
-        echo "Test 6: SELFDESTRUCT to address(0) emits NO Transfer log (EIP-8246 no-burn)"
+        echo "Test 6: SELFDESTRUCT to address(0) emits Transfer log (EIP-7708 × EIP-6780)"
         echo "  SelfDestructable contract: ${SD_NOBURN_CONTRACT}"
         echo "  Destroy tx:                ${SD_NOBURN_TX}"
-        echo "  No-burn no-log verified:   ${SD_NOBURN_VERIFIED}"
+        echo "  Transfer to address(0) verified: ${SD_NOBURN_VERIFIED}"
+        echo "  (EIP-6780 non-creation-tx: ETH moves to address(0); EIP-7708: Transfer log emitted)"
         echo "  Status: PASS"
         echo "============================================================"
 

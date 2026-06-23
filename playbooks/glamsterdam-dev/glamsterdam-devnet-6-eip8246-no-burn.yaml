@@ -3,23 +3,34 @@ name: "glamsterdam-devnet-6: EIP-8246 SELFDESTRUCT no-burn live verification"
 timeout: 2h
 config:
   walletPrivkey: ""
-  # EIP-8246: Remove the SELFDESTRUCT ether-burn behaviour.
+  # EIP-8246: Remove SELFDESTRUCT burn.
   #
-  # Pre-Amsterdam (Prague): SELFDESTRUCT sends ETH to the target address.
-  # If target == address(0), the ETH is "burned" (address(0) balance increases).
-  # From Amsterdam (EIP-8246): address(0) is special — ETH sent to address(0) via
-  # SELFDESTRUCT is silently dropped (no burn). ETH sent to any other target still
-  # reaches the target normally.
+  # EIP-8246 removes the only remaining case where SELFDESTRUCT can burn ETH:
+  # when a contract created in the SAME TRANSACTION executes SELFDESTRUCT with
+  # itself as the beneficiary (newContract=true, beneficiary=self).
+  #
+  # Before EIP-8246 (Cancun/Prague, governed by EIP-6780):
+  #   SELFDESTRUCT(self) in creation tx → ETH burned (disappears from total supply)
+  # After EIP-8246 (Amsterdam):
+  #   SELFDESTRUCT(self) in creation tx → ETH stays in account, code/storage cleared,
+  #   nonce reset to 0. Balance preserved (no burn).
+  #
+  # IMPORTANT: EIP-8246 does NOT change SELFDESTRUCT behavior in non-creation txs.
+  # SELFDESTRUCT(address(0)) in a separate tx (after deployment) is governed by EIP-6780:
+  # ETH still moves to address(0). EIP-8246 only removes the burn for the same-tx case.
   #
   # Tests:
-  #   1. SELFDESTRUCT with non-zero target (beneficiary):
-  #      - Deploy contract with 0.5 ETH, call destroy(beneficiary)
+  #   1. SELFDESTRUCT with non-zero beneficiary (non-creation tx, EIP-6780 behavior):
+  #      - Deploy contract with 0.5 ETH, call destroy(beneficiary) in separate tx
   #      - beneficiary balance increases by exactly 0.5 ETH
   #      - address(0) balance is UNCHANGED
+  #      - Confirms EIP-6780 non-creation-tx ETH routing works correctly.
   #
-  #   2. SELFDESTRUCT to address(0) (the no-burn case):
-  #      - Deploy another contract with 0.3 ETH, call destroy(address(0))
-  #      - address(0) balance is STILL UNCHANGED (ETH dropped, not burned)
+  #   2. Same-tx SELFDESTRUCT-to-self (EIP-8246 core behavior):
+  #      - Deploy contract with payable constructor that calls SELFDESTRUCT(address(this))
+  #      - After tx: contract address should have its original balance PRESERVED (not burned)
+  #      - After tx: code should be cleared (empty code at address)
+  #      - This is the key EIP-8246 change: balance preserved, no ETH leaves total supply.
 
 tasks:
   - name: check_clients_are_healthy
@@ -235,16 +246,19 @@ tasks:
               fi
               echo "PASS: beneficiary received exactly 0.5 ETH (${BENEFICIARY_AFTER} wei = before + ${FUND_WEI})."
 
-  # Test 2: SELFDESTRUCT directly to address(0) — ETH must NOT arrive (no burn)
+  # Test 2: Same-tx SELFDESTRUCT-to-self (core EIP-8246 behavior)
+  # A contract deployed with ETH that calls SELFDESTRUCT(address(this)) in its constructor
+  # exercises EIP-8246's key change: pre-8246 the ETH was burned; post-8246 it is preserved.
+  # After the deployment tx: the contract address retains its balance, code is cleared.
   - name: run_tasks
-    title: "Test 2: SELFDESTRUCT to address(0) — no burn, ETH dropped"
+    title: "Test 2: Same-tx SELFDESTRUCT-to-self — balance preserved (EIP-8246 core)"
     id: testNoBurn
     config:
       continueOnFailure: false
       tasks:
         - name: generate_child_wallet
           id: deployer2Wallet
-          title: "Generate funded deployer wallet for no-burn test (1 ETH)"
+          title: "Generate funded deployer wallet for same-tx SELFDESTRUCT test (1 ETH)"
           config:
             prefundMinBalance: 1000000000000000000  # 1 ETH
             walletSeed: "eip8246-no-burn-deployer2"
@@ -252,7 +266,7 @@ tasks:
             privateKey: "walletPrivkey"
 
         - name: run_shell
-          title: "Deploy second SelfDestructTest and verify address(0) unchanged on burn attempt"
+          title: "Deploy SelfDestructInConstructor — verify balance preserved, code cleared (EIP-8246)"
           id: runNoBurnTest
           timeout: 10m
           config:
@@ -275,79 +289,82 @@ tasks:
               export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
               export HOME=${FOUNDRY_HOME}
 
-              ZERO_ADDR="0x0000000000000000000000000000000000000000"
               FUND_WEI=300000000000000000  # 0.3 ETH in wei
 
-              echo "=== EIP-8246 SELFDESTRUCT no-burn: Test 2 (destroy to address(0)) ==="
+              echo "=== EIP-8246 Test 2: Same-tx SELFDESTRUCT-to-self — balance preserved ==="
               echo "Deployer: ${DEPLOYER_ADDR}"
               echo "RPC:      ${EL_RPC_HOST}"
-
-              # Record address(0) balance BEFORE this test's destruction
-              ZERO_BEFORE=$(cast balance ${ZERO_ADDR} --rpc-url ${EL_RPC_HOST})
-              echo "address(0) balance BEFORE destroy(address(0)): ${ZERO_BEFORE} wei"
-              echo "::set-output zeroBefore2 ${ZERO_BEFORE}"
-
-              # Deploy another SelfDestructTest funded with 0.3 ETH
               echo ""
-              echo "Deploying SelfDestructTest with ${FUND_WEI} wei (0.3 ETH)..."
+              echo "Spec: EIP-8246 — when a newly-created contract calls SELFDESTRUCT(self)"
+              echo "      in the same tx as its creation (newContract=true, beneficiary=self),"
+              echo "      the ETH is NO LONGER burned. Balance remains in the account;"
+              echo "      code and storage are cleared at finalization, nonce reset to 0."
+              echo ""
+
+              # SelfDestructInConstructor: calls SELFDESTRUCT(address(this)) in constructor.
+              # Deployed WITH value so we can verify balance preservation.
+              cat > ${WORK_DIR}/SelfDestructInConstructor.sol << 'SOLEOF'
+              // SPDX-License-Identifier: MIT
+              pragma solidity ^0.8.0;
+
+              // Calls SELFDESTRUCT(address(this)) in the constructor (same-tx creation + SELFDESTRUCT).
+              // EIP-8246: balance is preserved (not burned) after the deployment tx.
+              // The deployed address will have: balance=0.3 ETH, code=empty, nonce=0.
+              contract SelfDestructInConstructor {
+                  constructor() payable {
+                      selfdestruct(payable(address(this)));
+                  }
+              }
+              SOLEOF
+
+              echo "Deploying SelfDestructInConstructor with 0.3 ETH..."
               DEPLOY_OUT=$(forge create \
                 --rpc-url ${EL_RPC_HOST} \
                 --private-key ${DEPLOYER_PRIVKEY} \
                 --value ${FUND_WEI} \
                 --legacy \
                 --json \
-                ${WORK_DIR}/SelfDestructTest.sol:SelfDestructTest)
+                ${WORK_DIR}/SelfDestructInConstructor.sol:SelfDestructInConstructor)
 
               CONTRACT_ADDR=$(echo "${DEPLOY_OUT}" | jq -r '.deployedTo')
+              DEPLOY_TX=$(echo "${DEPLOY_OUT}" | jq -r '.transactionHash')
               echo "Contract deployed at: ${CONTRACT_ADDR}"
+              echo "Deployment tx hash:   ${DEPLOY_TX}"
               echo "::set-output contractAddr2 ${CONTRACT_ADDR}"
+              echo "::set-output noBurnTxHash ${DEPLOY_TX}"
 
-              CONTRACT_BALANCE=$(cast balance ${CONTRACT_ADDR} --rpc-url ${EL_RPC_HOST})
-              echo "Contract balance: ${CONTRACT_BALANCE} wei (expected: ${FUND_WEI})"
-
-              # Call destroy(address(0)) — the no-burn case
+              # EIP-8246: balance MUST be preserved (0.3 ETH should remain at the address)
+              POST_BALANCE=$(cast balance ${CONTRACT_ADDR} --rpc-url ${EL_RPC_HOST})
               echo ""
-              echo "Calling destroy(address(0)) — SELFDESTRUCT targeting zero address..."
-              TX_JSON=$(cast send ${CONTRACT_ADDR} \
-                "destroy(address)" ${ZERO_ADDR} \
-                --private-key ${DEPLOYER_PRIVKEY} \
-                --rpc-url ${EL_RPC_HOST} \
-                --legacy \
-                --json)
+              echo "Balance at ${CONTRACT_ADDR} after deployment: ${POST_BALANCE} wei"
+              echo "Expected: ${FUND_WEI} wei (0.3 ETH, preserved by EIP-8246)"
+              echo "::set-output zeroAfter2 ${POST_BALANCE}"
+              echo "::set-output zeroBefore2 ${FUND_WEI}"
 
-              TX_HASH=$(echo "${TX_JSON}" | jq -r '.transactionHash')
-              echo "destroy(address(0)) tx hash: ${TX_HASH}"
-              echo "::set-output noBurnTxHash ${TX_HASH}"
-
-              RECEIPT=$(cast receipt ${TX_HASH} --rpc-url ${EL_RPC_HOST} --json)
-              STATUS=$(echo "${RECEIPT}" | jq -r '.status')
-              if [ "${STATUS}" != "0x1" ] && [ "${STATUS}" != "1" ]; then
-                echo "FAIL: destroy(address(0)) transaction reverted (status=${STATUS})"
+              if [ "${POST_BALANCE}" != "${FUND_WEI}" ]; then
+                echo ""
+                echo "FAIL: Balance at contract address is ${POST_BALANCE}, expected ${FUND_WEI}."
+                echo "  Pre-EIP-8246: ETH burned → balance=0."
+                echo "  EIP-8246:     ETH preserved → balance=0.3 ETH."
+                echo "  This client has NOT implemented EIP-8246 same-tx SELFDESTRUCT-to-self"
+                echo "  balance preservation. The ETH was burned instead of being retained."
                 exit 1
               fi
 
-              # Record address(0) balance AFTER destruction to address(0)
-              ZERO_AFTER=$(cast balance ${ZERO_ADDR} --rpc-url ${EL_RPC_HOST})
-              echo ""
-              echo "address(0) balance AFTER destroy(address(0)): ${ZERO_AFTER} wei"
-              echo "::set-output zeroAfter2 ${ZERO_AFTER}"
-
-              # ----------------------------------------------------------------
-              # Assertion: address(0) must be UNCHANGED even when it is the target.
-              # Pre-EIP-8246: SELFDESTRUCT to address(0) would increase address(0) balance.
-              # Post-EIP-8246: the ETH is silently discarded (no burn, no balance change).
-              # ----------------------------------------------------------------
-              if [ "${ZERO_AFTER}" != "${ZERO_BEFORE}" ]; then
-                echo "FAIL: address(0) balance changed after destroy(address(0))!"
-                echo "  BEFORE: ${ZERO_BEFORE} wei"
-                echo "  AFTER:  ${ZERO_AFTER} wei"
-                echo "  Delta:  $(echo "${ZERO_AFTER} - ${ZERO_BEFORE}" | bc) wei"
-                echo "  EIP-8246 requires the ETH to be dropped (not burned) when SELFDESTRUCT"
-                echo "  targets address(0). This client still implements the old burn behaviour."
-                exit 1
+              # EIP-8246 finalization: code MUST be cleared at the address
+              POST_CODE=$(cast code ${CONTRACT_ADDR} --rpc-url ${EL_RPC_HOST} 2>/dev/null || echo "0x")
+              echo "Code at ${CONTRACT_ADDR} after deployment: ${POST_CODE}"
+              if [ "${POST_CODE}" != "0x" ] && [ "${POST_CODE}" != "" ]; then
+                echo "WARN: Code not cleared at ${CONTRACT_ADDR} (got ${POST_CODE})"
+                echo "      EIP-8246 spec says code should be cleared at finalization."
+              else
+                echo "Code correctly cleared (empty code, as expected by EIP-8246 finalization)."
               fi
-              echo "PASS: address(0) balance unchanged (${ZERO_AFTER} wei) after SELFDESTRUCT to address(0)."
-              echo "      EIP-8246 no-burn behaviour is correctly implemented."
+
+              echo ""
+              echo "PASS: EIP-8246 same-tx SELFDESTRUCT-to-self balance preservation verified."
+              echo "  Balance: ${POST_BALANCE} wei (${FUND_WEI} expected) — ETH preserved"
+              echo "  Code:    ${POST_CODE} (should be empty)"
 
   # Final summary
   - name: run_shell
@@ -361,27 +378,29 @@ tasks:
         BENEFICIARY_BEFORE: tasks.runBeneficiaryTest.outputs.beneficiaryBefore
         BENEFICIARY_AFTER: tasks.runBeneficiaryTest.outputs.beneficiaryAfter
         DESTROY_TX: tasks.runBeneficiaryTest.outputs.destroyTxHash
-        ZERO_BEFORE_T2: tasks.runNoBurnTest.outputs.zeroBefore2
-        ZERO_AFTER_T2: tasks.runNoBurnTest.outputs.zeroAfter2
-        NO_BURN_TX: tasks.runNoBurnTest.outputs.noBurnTxHash
+        CONTRACT2: tasks.runNoBurnTest.outputs.contractAddr2
+        DEPLOY_TX2: tasks.runNoBurnTest.outputs.noBurnTxHash
+        POST_BALANCE: tasks.runNoBurnTest.outputs.zeroAfter2
+        EXPECTED_BALANCE: tasks.runNoBurnTest.outputs.zeroBefore2
       command: |
         ZERO_BEFORE_T1=$(echo $ZERO_BEFORE_T1 | jq -r)
         ZERO_AFTER_T1=$(echo $ZERO_AFTER_T1 | jq -r)
         BENEFICIARY_BEFORE=$(echo $BENEFICIARY_BEFORE | jq -r)
         BENEFICIARY_AFTER=$(echo $BENEFICIARY_AFTER | jq -r)
         DESTROY_TX=$(echo $DESTROY_TX | jq -r)
-        ZERO_BEFORE_T2=$(echo $ZERO_BEFORE_T2 | jq -r)
-        ZERO_AFTER_T2=$(echo $ZERO_AFTER_T2 | jq -r)
-        NO_BURN_TX=$(echo $NO_BURN_TX | jq -r)
+        CONTRACT2=$(echo $CONTRACT2 | jq -r)
+        DEPLOY_TX2=$(echo $DEPLOY_TX2 | jq -r)
+        POST_BALANCE=$(echo $POST_BALANCE | jq -r)
+        EXPECTED_BALANCE=$(echo $EXPECTED_BALANCE | jq -r)
         echo "================================================================"
         echo "EIP-8246 SELFDESTRUCT No-Burn Verification Summary"
         echo "================================================================"
         echo ""
         echo "EIP-8246 specification (Amsterdam):"
-        echo "  SELFDESTRUCT to any non-zero target: ETH sent to target (unchanged)"
-        echo "  SELFDESTRUCT to address(0):          ETH DROPPED (no burn — address(0) unchanged)"
+        echo "  Non-creation-tx SELFDESTRUCT (EIP-6780): ETH moves to beneficiary (unchanged)"
+        echo "  Same-tx SELFDESTRUCT-to-self (EIP-8246): balance PRESERVED — ETH no longer burned"
         echo ""
-        echo "Test 1: SELFDESTRUCT to beneficiary (0.5 ETH)"
+        echo "Test 1: SELFDESTRUCT to beneficiary in non-creation tx (0.5 ETH)"
         echo "  Tx hash:              ${DESTROY_TX}"
         echo "  address(0) before:    ${ZERO_BEFORE_T1} wei"
         echo "  address(0) after:     ${ZERO_AFTER_T1} wei  (must be equal)"
@@ -389,10 +408,10 @@ tasks:
         echo "  beneficiary after:    ${BENEFICIARY_AFTER} wei  (must be +0.5 ETH)"
         echo "  Status: PASS"
         echo ""
-        echo "Test 2: SELFDESTRUCT to address(0) (0.3 ETH — no-burn case)"
-        echo "  Tx hash:              ${NO_BURN_TX}"
-        echo "  address(0) before:    ${ZERO_BEFORE_T2} wei"
-        echo "  address(0) after:     ${ZERO_AFTER_T2} wei  (must be equal)"
+        echo "Test 2: Same-tx SELFDESTRUCT-to-self, balance preserved (0.3 ETH)"
+        echo "  Contract:             ${CONTRACT2}"
+        echo "  Deployment tx:        ${DEPLOY_TX2}"
+        echo "  Post-deploy balance:  ${POST_BALANCE} wei  (expected: ${EXPECTED_BALANCE} wei)"
         echo "  Status: PASS"
         echo "================================================================"
 
