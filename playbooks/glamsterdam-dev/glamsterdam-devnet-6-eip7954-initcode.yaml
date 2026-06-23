@@ -55,6 +55,7 @@ tasks:
         set -e
         FOUNDRY_HOME=$(mktemp -d -t foundry-XXXXXXXXXX)
         echo "::set-output foundryHome ${FOUNDRY_HOME}"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
         curl -L https://foundry.paradigm.xyz | bash
         source ${FOUNDRY_HOME}/.bashrc || true
@@ -100,6 +101,7 @@ tasks:
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
 
         export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
 
         echo "=== EIP-7954 Initcode Size Limit: Test 1 (30 KiB contract) ==="
@@ -195,6 +197,7 @@ tasks:
         WORK_DIR=$(echo $WORK_DIR | jq -r)
 
         export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
 
         echo "=== EIP-7954 Code Size Limit: Test 2 (60 KiB contract, > old Prague initcode limit) ==="

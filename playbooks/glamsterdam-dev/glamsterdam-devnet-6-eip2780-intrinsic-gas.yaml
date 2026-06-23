@@ -77,6 +77,7 @@ tasks:
         set -e
         FOUNDRY_HOME=$(mktemp -d -t foundry-XXXXXXXXXX)
         echo "::set-output foundryHome ${FOUNDRY_HOME}"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
         curl -L https://foundry.paradigm.xyz | bash
         source ${FOUNDRY_HOME}/.bashrc || true
@@ -104,6 +105,7 @@ tasks:
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
 
         export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
 
         echo "=== Test 1: Simple ETH Transfer (TX_BASE) ==="
@@ -170,6 +172,7 @@ tasks:
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
 
         export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
 
         echo "=== Test 2: Tx with 100 zero calldata bytes ==="
@@ -244,6 +247,7 @@ tasks:
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
 
         export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
 
         echo "=== Test 3: Tx with 100 non-zero calldata bytes ==="

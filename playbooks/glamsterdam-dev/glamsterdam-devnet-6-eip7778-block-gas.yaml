@@ -58,6 +58,7 @@ tasks:
         set -e
         FOUNDRY_HOME=$(mktemp -d -t foundry-XXXXXXXXXX)
         echo "::set-output foundryHome ${FOUNDRY_HOME}"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
         curl -L https://foundry.paradigm.xyz | bash
         source ${FOUNDRY_HOME}/.bashrc || true
@@ -97,6 +98,7 @@ tasks:
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
 
         export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
 
         echo "=== EIP-7778 Block Gas Accounting Without Refunds ==="
@@ -243,5 +245,5 @@ cleanupTasks:
       command: |
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
         WORK_DIR=$(echo $WORK_DIR | jq -r)
-        [ -d "$FOUNDRY_HOME" ] && rm -rf "$FOUNDRY_HOME" && echo "Cleaned foundry"
-        [ -d "$WORK_DIR" ] && rm -rf "$WORK_DIR" && echo "Cleaned work dir"
+        [ -d "$FOUNDRY_HOME" ] && rm -rf "$FOUNDRY_HOME" && echo "Cleaned foundry" || true
+        [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ] && rm -rf "$WORK_DIR" && echo "Cleaned work dir" || true

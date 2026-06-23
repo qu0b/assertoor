@@ -88,6 +88,7 @@ tasks:
         set -e
         FOUNDRY_HOME=$(mktemp -d -t foundry-XXXXXXXXXX)
         echo "::set-output foundryHome ${FOUNDRY_HOME}"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
         curl -L https://foundry.paradigm.xyz | bash
         source ${FOUNDRY_HOME}/.bashrc || true
@@ -115,6 +116,7 @@ tasks:
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
 
         export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
 
         echo "=== EIP-7843 SLOTNUM Opcode Availability Check ==="
@@ -440,6 +442,7 @@ tasks:
         CL_RPC=$(echo $CL_RPC | jq -r)
         FOUNDRY_HOME=$(echo $FOUNDRY_HOME | jq -r)
         export PATH="${FOUNDRY_HOME}/.foundry/bin:$PATH"
+        export SHELL=/bin/bash
         export HOME=${FOUNDRY_HOME}
 
         echo "=== EIP-7843 SLOTNUM Cross-Validation vs CL Beacon API ==="
