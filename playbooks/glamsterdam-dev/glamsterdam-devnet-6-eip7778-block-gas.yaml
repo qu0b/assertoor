@@ -173,20 +173,21 @@ tasks:
         echo "receipt.gasUsed:    ${CLEAR_GAS_HEX} (hex)"
         echo "block:              ${BLOCK_NUM}"
 
-        # Fetch block by number — hex block number must be JSON-quoted for cast rpc
+        # Fetch block by number — hex block number must be JSON-quoted for cast rpc.
+        # cast 1.7.1 returns the raw result directly (no .result wrapper).
         BLOCK_JSON=$(cast rpc eth_getBlockByNumber "\"${BLOCK_NUM}\"" false \
           --rpc-url ${EL_RPC_HOST})
-        BLOCK_GAS_HEX=$(echo "${BLOCK_JSON}" | jq -r '.result.gasUsed')
-        TX_HASHES=$(echo "${BLOCK_JSON}" | jq -r '.result.transactions[]')
-        TX_COUNT=$(echo "${BLOCK_JSON}" | jq '.result.transactions | length')
+        BLOCK_GAS_HEX=$(echo "${BLOCK_JSON}" | jq -r '.gasUsed')
+        TX_HASHES=$(echo "${BLOCK_JSON}" | jq -r '.transactions[]')
+        TX_COUNT=$(echo "${BLOCK_JSON}" | jq '.transactions | length')
         echo "block.gasUsed:      ${BLOCK_GAS_HEX} (hex)"
         echo "txs in block:       ${TX_COUNT}"
 
         # Sum receipt.gasUsed for every tx in the block
         SUM_RECEIPT_GAS=0
         for hash in ${TX_HASHES}; do
-          GU_HEX=$(cast rpc eth_getTransactionReceipt "${hash}" \
-            --rpc-url ${EL_RPC_HOST} | jq -r '.result.gasUsed')
+          GU_HEX=$(cast rpc eth_getTransactionReceipt "\"${hash}\"" \
+            --rpc-url ${EL_RPC_HOST} | jq -r '.gasUsed')
           GU_DEC=$(python3 -c "print(int('${GU_HEX}', 16))")
           SUM_RECEIPT_GAS=$((SUM_RECEIPT_GAS + GU_DEC))
         done
