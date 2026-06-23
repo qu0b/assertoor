@@ -123,7 +123,7 @@ require (
 	modernc.org/sqlite v1.46.1 // indirect
 )
 
-replace github.com/attestantio/go-eth2-client => github.com/qu0b/go-eth2-client v0.0.0-20260211134817-89b1d064a7e5
+replace github.com/attestantio/go-eth2-client => github.com/qu0b/go-eth2-client v0.0.0-20260623052313-f68e25a667d6
 
 // qu0b/spamoor carries effectiveCpsb fork-boundary fix
 // (qu0b/fix/effective-cpsb-fork-race). Drop once upstreamed.
